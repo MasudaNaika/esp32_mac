@@ -1,0 +1,6 @@
+# ESP32-S3 Mac Plus Emulator Partition Table
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x5000
+factory,  app,  factory, 0x10000,  0x100000
+rom,      0x40, 0x01,    0x110000, 0x20000
+hd,       0x40, 0x02,    0x130000, 0xEC0000

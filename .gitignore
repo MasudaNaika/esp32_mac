@@ -1,0 +1,8 @@
+.pio
+.vscode
+.claude
+*.rom
+*.img
+*.dsk
+cfg/
+nvram/
