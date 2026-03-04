@@ -4,6 +4,8 @@
  */
 #include <Arduino.h>
 #include <string.h>
+#include <WiFiManager.h>
+#include <ESPmDNS.h>
 #include "esp_partition.h"
 #include "esp_heap_caps.h"
 #include "nvs_flash.h"
@@ -12,6 +14,7 @@
 #include "I2C_Driver.h"
 #include "TCA9554PWR.h"
 #include "Display_ST7701.h"
+#include "wifi_input.h"
 
 extern "C" {
 #include "tme/emu.h"
@@ -21,6 +24,102 @@ extern "C" {
 
 static uint8_t *romData = NULL;
 static char pram[32];
+
+// --- ROM patching for 640x480 screen (from Mini vMac SCRNHACK.h) ---
+// Mac Plus ROM has 512x342 hardcoded. We patch it to 640x480.
+#define PATCHED_W 640
+#define PATCHED_H 480
+#define PATCHED_STRIDE (PATCHED_W / 8)  // 80
+#define PATCHED_VIDBASE 0x00540000      // Video memory outside RAM (like Mini vMac)
+
+static inline void rom_put_word(uint8_t *rom, int offset, uint16_t val) {
+    rom[offset]     = (val >> 8) & 0xFF;
+    rom[offset + 1] = val & 0xFF;
+}
+
+static inline void rom_put_long(uint8_t *rom, int offset, uint32_t val) {
+    rom[offset]     = (val >> 24) & 0xFF;
+    rom[offset + 1] = (val >> 16) & 0xFF;
+    rom[offset + 2] = (val >> 8) & 0xFF;
+    rom[offset + 3] = val & 0xFF;
+}
+
+static void patchRomForLargeScreen(uint8_t *rom) {
+    const int W = PATCHED_W;
+    const int H = PATCHED_H;
+    const uint32_t VB = PATCHED_VIDBASE;
+
+    printf("ROM PATCH: %dx%d, stride=%d, vidbase=0x%06lX\n", W, H, W/8, (unsigned long)VB);
+
+    // 1. Disable ROM checksum (patches invalidate it)
+    rom_put_word(rom, 0xD7A, 0x6022);  // BRA +0x22 (skip checksum)
+
+    // 2. Disable RAM test for faster boot
+    rom_put_word(rom, 3752, 0x4E71);  // NOP
+    rom_put_word(rom, 3728, 0x4E71);  // NOP
+
+    // 3. Video memory base references
+    rom_put_long(rom, 138, VB);
+    rom_put_long(rom, 326, VB);
+
+    // 4. Sad mac error display positions
+    rom_put_long(rom, 356, VB + (((H/4)*2+9)*W + (W/2-24))/8);
+    rom_put_word(rom, 392, W / 8);
+    rom_put_word(rom, 404, W / 8);
+    rom_put_word(rom, 412, W / 4 * 3 - 1);
+    rom_put_long(rom, 420, VB + (((H/4)*2+17)*W + (W/2-8))/8);
+
+    // 5. Screen clear: size in longwords
+    rom_put_word(rom, 494, (H * W / 32) - 1);
+
+    // 6. Screen setup: JSR to patch that sets ScrnBase
+    //    We write a small patch routine at the end of the Sony driver area.
+    //    Find free space after offset 0x1A000 (well within 128KB ROM).
+    int patchAddr = 0x1E000;  // Free area near end of ROM
+    // At ROM offset 1132: JSR to our patch
+    rom_put_word(rom, 1132, 0x4EB9);                   // JSR abs.L
+    rom_put_long(rom, 1134, 0x00400000 + patchAddr);    // ROM base + patch offset
+    // Patch routine: MOVE.L #VB, (ScrnBase=0x0824)
+    rom_put_word(rom, patchAddr,     0x21FC);           // MOVE.L #imm, (abs).W
+    rom_put_long(rom, patchAddr + 2, VB);               // immediate value
+    rom_put_word(rom, patchAddr + 6, 0x0824);           // ScrnBase low-mem global
+    rom_put_word(rom, patchAddr + 8, 0x4E75);           // RTS
+
+    // 7. QuickDraw screen bitmap dimensions
+    rom_put_word(rom, 1140, W / 8);   // screenRow (row bytes)
+    rom_put_word(rom, 1172, H);       // screen height
+    rom_put_word(rom, 1176, W);       // screen width
+
+    // 8. Floppy blink icon positions
+    rom_put_long(rom, 2016, VB + (((H/4)*2-25)*W + (W/2-16))/8);
+    rom_put_long(rom, 2034, VB + (((H/4)*2-10)*W + (W/2-8))/8);
+
+    // 9. Additional screen dimension references
+    rom_put_word(rom, 2574, H);
+    rom_put_word(rom, 2576, W);
+
+    // 10. Sad mac icon positions
+    rom_put_word(rom, 3810, W / 8 - 4);
+    rom_put_word(rom, 3826, W / 8);
+    rom_put_long(rom, 3852, VB + (((H/4)*2-25)*W + (W/2-16))/8);
+    rom_put_long(rom, 3864, VB + (((H/4)*2-19)*W + (W/2-8))/8);
+    rom_put_word(rom, 3894, W / 8 - 2);
+
+    // 11. Cursor handling (W < 1024, so MOVEQ works)
+    rom_put_word(rom, 7376, 0x7000 + (W/8));  // MOVEQ #(W/8), D0
+    rom_put_word(rom, 7496, W - 32);           // cursor X clamp
+    rom_put_word(rom, 7502, W - 32);           // cursor X clamp
+    rom_put_word(rom, 7534, H - 16);           // cursor Y clamp
+    rom_put_word(rom, 7540, H);                // cursor Y limit
+    rom_put_word(rom, 7570, 0x7A00 + (W/8));   // MOVEQ #(W/8), D5
+
+    // 12. screenBits record
+    rom_put_word(rom, 7784, H);   // screenBits.bounds.bottom
+    rom_put_word(rom, 7790, W);   // screenBits.bounds.right
+    rom_put_word(rom, 7810, H);   // screen height
+
+    printf("ROM PATCH: Applied %d patches for %dx%d screen\n", 30, W, H);
+}
 
 // Called by rtc.c when PRAM changes — save to NVS
 extern "C" void saveRtcMem(char *mem) {
@@ -92,6 +191,21 @@ static bool loadRom() {
     return true;
 }
 
+static void wifiTask(void *param) {
+    WiFiManager wm;
+    wm.setConfigPortalTimeout(120);
+    if (wm.autoConnect("MacPlus-Setup")) {
+        printf("WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+        if (MDNS.begin("macplus")) {
+            printf("mDNS: macplus.local\n");
+        }
+    } else {
+        printf("WiFi: portal timed out, continuing without network\n");
+    }
+    wifiInputInit();
+    vTaskDelete(NULL);
+}
+
 static void emuTask(void *param) {
 
     printf("Starting Mac Plus emulation on core %d...\n", xPortGetCoreID());
@@ -135,8 +249,14 @@ void setup() {
         while (1) delay(1000);
     }
 
+    // Patch ROM for 640x480 screen resolution
+    patchRomForLargeScreen(romData);
+
     // Start emulation on core 0 (core 1 handles display refresh from emu)
     xTaskCreatePinnedToCore(emuTask, "emu", 8192, NULL, 5, NULL, 0);
+
+    // WiFi setup in its own task (autoConnect blocks, must not starve display)
+    xTaskCreatePinnedToCore(wifiTask, "wifi", 8192, NULL, 1, NULL, 1);
 }
 
 void loop() {

@@ -18,11 +18,13 @@ static const int quad[4]={0x0, 0x1, 0x3, 0x2};
 
 Mouse mouse;
 
-#define MAXCDX 50
+#define MAXCDX 640
 
 void mouseMove(int dx, int dy, int btn) {
-	mouse.dx+=dx;
-	mouse.dy+=dy;
+	// Scale by 2: quadrature encoding needs 2 ticks per pixel
+	// (SCC DCD interrupt fires every 2 quad steps)
+	mouse.dx+=dx*2;
+	mouse.dy+=dy*2;
 	if (mouse.dx>MAXCDX) mouse.dx=MAXCDX;
 	if (mouse.dy>MAXCDX) mouse.dy=MAXCDX;
 	if (mouse.dx<-MAXCDX) mouse.dx=-MAXCDX;
@@ -51,6 +53,5 @@ int mouseTick() {
 	ret=quad[mouse.rpx&3];
 	ret|=quad[mouse.rpy&3]<<2;
 	ret|=mouse.btn<<4;
-//	printf("dx %d dy %d ret %x\n", mouse.dx, mouse.dy, ret);
 	return ret;
 }

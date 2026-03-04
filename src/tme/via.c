@@ -8,8 +8,34 @@
  */
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #include "via.h"
 #include "m68k.h"
+
+// --- Mac Plus keyboard (M0110A) via VIA Shift Register ---
+#define KBD_QUEUE_SIZE 32
+static uint8_t kbdQueue[KBD_QUEUE_SIZE];
+static volatile int kbdQueueHead = 0;
+static volatile int kbdQueueTail = 0;
+static uint8_t kbdResponse = 0x7B; // null key (no key pressed)
+static uint8_t kbdLastCmd = 0;
+
+void kbdPushKey(uint8_t scancode, int isRelease) {
+    uint8_t val = (scancode << 1) | 1;
+    if (isRelease) val |= 0x80;
+    int next = (kbdQueueHead + 1) % KBD_QUEUE_SIZE;
+    if (next != kbdQueueTail) {
+        kbdQueue[kbdQueueHead] = val;
+        kbdQueueHead = next;
+    }
+}
+
+static uint8_t kbdDequeue(void) {
+    if (kbdQueueHead == kbdQueueTail) return 0x7B; // null
+    uint8_t val = kbdQueue[kbdQueueTail];
+    kbdQueueTail = (kbdQueueTail + 1) % KBD_QUEUE_SIZE;
+    return val;
+}
 
 void viaCbPortAWrite(unsigned int val);
 void viaCbPortBWrite(unsigned int val);
@@ -187,9 +213,21 @@ void viaWrite(unsigned int addr, unsigned int val) {
 		via.ifr&=~IFR_T2;
 		viaCheckIrq();
 	} else if (addr==0xa) {
-		//SR
+		//SR — keyboard command from Mac
+		kbdLastCmd = val;
+		if (val == 0x10) {
+			// Inquiry: return next key or null
+			kbdResponse = kbdDequeue();
+		} else if (val == 0x14) {
+			// Model Number: M0110A = 0x0B
+			kbdResponse = 0x0B;
+		} else if (val == 0x36) {
+			// Test: respond with 0x7D (ACK)
+			kbdResponse = 0x7D;
+		} else {
+			kbdResponse = 0x7B; // null
+		}
 		via.srTicks=8;
-//		printf("6522: Unimplemented: Write %x to SR?\n", val);
 	} else if (addr==0xb) {
 		//ACR
 		via.acr=val;
@@ -262,10 +300,9 @@ unsigned int viaRead(unsigned int addr) {
 		//T2C-H
 		val=via.timer2>>8;
 	} else if (addr==0xa) {
-		//SR
+		//SR — keyboard response
 		via.ifr&=~IFR_SR;
-		val=0xff;
-//		printf("6522: Unimplemented: Read from SR?\n");
+		val=kbdResponse;
 	} else if (addr==0xb) {
 		//ACR
 		val=via.acr;

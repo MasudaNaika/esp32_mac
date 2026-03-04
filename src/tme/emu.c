@@ -32,6 +32,7 @@
 
 unsigned char *macRom;
 unsigned char *macRam;
+unsigned char *vidMem;
 
 #define MEMADDR_DUMMY_CACHE (void*)1
 
@@ -161,6 +162,12 @@ static void regenMemmap(int remapRom) {
 		memmap[i].cb=bogusReadCb;
 	}
 
+	// 0x500000-0x580000: Video memory (for large screen hack)
+	for (i=TME_VIDMEM_BASE/MEMMAP_ES; i<(TME_VIDMEM_BASE+TME_VIDMEM_SIZE)/MEMMAP_ES; i++) {
+		memmap[i].memAddr=&vidMem[(i-TME_VIDMEM_BASE/MEMMAP_ES)*MEMMAP_ES];
+		memmap[i].flags=0;
+	}
+
 	for (i=0x580000/MEMMAP_ES; i<0x600000/MEMMAP_ES; i++) {
 		memmap[i].memAddr=NULL;
 		memmap[i].cb=ncrAccessCb;
@@ -203,8 +210,15 @@ static void ramInit() {
 	macRam=(unsigned char*)heap_caps_malloc(TME_RAMSIZE, MALLOC_CAP_SPIRAM);
 	assert(macRam);
 	printf("Mac RAM allocated at %p (%d bytes)\n", macRam, TME_RAMSIZE);
-	macFb[0]=&macRam[TME_SCREENBUF];
-	macFb[1]=&macRam[TME_SCREENBUF_ALT];
+
+	// Separate video memory for large screen hack (mapped at 0x500000-0x580000)
+	vidMem=(unsigned char*)heap_caps_malloc(TME_VIDMEM_SIZE, MALLOC_CAP_SPIRAM);
+	assert(vidMem);
+	printf("Video RAM allocated at %p (%d bytes)\n", vidMem, TME_VIDMEM_SIZE);
+	memset(vidMem, 0xFF, TME_VIDMEM_SIZE);  // white screen initially
+
+	macFb[0]=&vidMem[TME_SCREENBUF];
+	macFb[1]=&vidMem[TME_SCREENBUF_ALT];
 	macSnd[0]=&macRam[TME_SNDBUF];
 	macSnd[1]=&macRam[TME_SNDBUF_ALT];
 	printf("Clearing ram...\n");
