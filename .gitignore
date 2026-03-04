@@ -4,5 +4,7 @@
 *.rom
 *.img
 *.dsk
+*.hd
+bins/
 cfg/
 nvram/
