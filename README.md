@@ -1,6 +1,6 @@
 # Mac Plus Emulator on ESP32-S3
 
-A Macintosh Plus emulator running on the **Waveshare ESP32-S3-Touch-LCD-2.8B** board.
+A Macintosh Plus emulator running on the **Waveshare ESP32-S3-Touch-LCD-2.8B** board. Mouse and keyboard input is sent over WiFi as UDP packets, with a Python desktop client that maps your mouse position to the Mac cursor and translates keystrokes to Mac scancodes.
 
 Based on [Spritetm's minimacplus](https://github.com/Spritetm/minimacplus), adapted for ESP32-S3 with OPI PSRAM and a 480x640 ST7701 RGB display.
 
