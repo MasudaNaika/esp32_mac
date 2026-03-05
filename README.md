@@ -24,6 +24,7 @@ Based on [Spritetm's minimacplus](https://github.com/Spritetm/minimacplus), adap
 - PRAM saved to NVS
 - WiFi with captive portal config (WiFiManager) + mDNS (`macplus.local`)
 - UDP mouse/keyboard input over WiFi (port 4444)
+- Built-in mobile web UI with trackpad, click button, and virtual keyboard
 - Python input client with absolute mouse positioning (`tools/mac_input.py`)
 
 ## Storage: SD Card & Flash
@@ -98,7 +99,18 @@ To reset WiFi credentials:
 - Press **F12** in the input client, or
 - Send a UDP packet containing `W` to port 4444
 
-### 5. Input client
+### 5. Mobile web UI
+
+Open `http://macplus.local` on your phone. The web UI provides:
+
+- **Trackpad** — touch and drag to move the Mac cursor
+- **Click button** — tap for a single click; long press (~400ms) to lock the button down for dragging, tap again to release
+- **Virtual keyboard** — tap the keyboard icon to show/hide a full Mac M0110A layout
+  - Modifier keys (Shift, Ctrl, Opt, Cmd) are sticky: tap to activate, auto-release after the next key
+  - Caps Lock is a true toggle: tap to engage, tap again to disengage
+- **Settings** (gear icon) — WiFi reset
+
+### 6. Input client
 
 ```bash
 python3 tools/mac_input.py [host] [port]

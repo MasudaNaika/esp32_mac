@@ -1,0 +1,408 @@
+#ifndef INDEX_HTML_H
+#define INDEX_HTML_H
+
+static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Mac Plus</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden}
+body{background:#111;color:#ccc;font-family:monospace;display:flex;flex-direction:column;align-items:center}
+#status{padding:6px;font-size:12px;text-align:center}
+.ok{color:#0f0}.err{color:#f44}
+
+/* Trackpad area */
+#trackpad{background:#1a1a1a;border:2px solid #444;flex:1;width:100%;max-width:600px;
+ touch-action:none;position:relative;cursor:crosshair;min-height:80px}
+#trackpad::after{content:'Trackpad';position:absolute;top:50%;left:50%;
+ transform:translate(-50%,-50%);color:#333;font-size:24px;pointer-events:none}
+
+/* Bottom controls */
+#controls{width:100%;max-width:600px;display:flex;gap:2px;padding:2px}
+#clickbtn{flex:3;background:#2a2a2a;color:#ccc;border:2px solid #555;
+ padding:20px;font-size:18px;font-family:monospace;touch-action:none;
+ user-select:none;-webkit-user-select:none;text-align:center}
+#clickbtn.down{background:#555;border-color:#888}
+#clickbtn.locked{background:#400;border-color:#a44;color:#f88}
+
+/* Settings gear & keyboard toggle */
+.ctrlbtn{flex:0 0 auto;background:#222;color:#666;border:2px solid #444;
+ padding:10px 14px;font-size:22px;cursor:pointer;touch-action:none;
+ user-select:none;-webkit-user-select:none}
+.ctrlbtn:hover{color:#aaa}
+.ctrlbtn.active{color:#0f0;border-color:#0a0}
+
+/* Desktop: pointer lock info */
+#info{padding:4px;font-size:12px;color:#666;text-align:center}
+
+/* Virtual keyboard */
+#keyboard{display:none;width:100%;max-width:600px;background:#1a1a1a;
+ border:2px solid #444;padding:3px;flex-shrink:0}
+#keyboard.show{display:block}
+.krow{display:flex;gap:2px;margin-bottom:2px}
+.krow:last-child{margin-bottom:0}
+.key{background:#2a2a2a;color:#ccc;border:1px solid #555;
+ text-align:center;font-family:monospace;font-size:12px;
+ padding:0;height:38px;line-height:38px;flex:1;
+ touch-action:none;user-select:none;-webkit-user-select:none;cursor:pointer}
+.key:active,.key.pressed{background:#555;border-color:#888}
+.key.mod.active{background:#060;color:#0f0;border-color:#0a0}
+.key.w15{flex:1.5}.key.w20{flex:2}.key.w25{flex:2.5}
+.key.w30{flex:3}.key.w60{flex:6}
+
+/* Menu overlay */
+#menu{display:none;position:fixed;top:0;left:0;right:0;bottom:0;
+ background:rgba(0,0,0,0.8);z-index:10;justify-content:center;align-items:center}
+#menu.show{display:flex}
+#menupanel{background:#222;border:1px solid #555;padding:20px;min-width:200px}
+#menupanel button{display:block;width:100%;background:#333;color:#ccc;
+ border:1px solid #555;padding:10px;margin:6px 0;font-family:monospace;
+ font-size:14px;cursor:pointer}
+#menupanel button:hover{background:#444}
+#menupanel button.danger{color:#f66;border-color:#633}
+#menupanel button.danger:hover{background:#422}
+</style>
+</head>
+<body>
+<div id="status" class="err">Connecting...</div>
+<div id="trackpad"></div>
+<div id="controls">
+ <div id="clickbtn">Click</div>
+ <div id="kbdbtn" class="ctrlbtn">&#9000;</div>
+ <div id="gear" class="ctrlbtn">&#9881;</div>
+</div>
+<div id="info">On desktop: click trackpad to capture mouse</div>
+
+<div id="keyboard">
+ <div class="krow">
+  <div class="key" data-sc="0x35">Esc</div>
+  <div class="key" data-sc="0x12">1</div><div class="key" data-sc="0x13">2</div>
+  <div class="key" data-sc="0x14">3</div><div class="key" data-sc="0x15">4</div>
+  <div class="key" data-sc="0x17">5</div><div class="key" data-sc="0x16">6</div>
+  <div class="key" data-sc="0x1A">7</div><div class="key" data-sc="0x1C">8</div>
+  <div class="key" data-sc="0x19">9</div><div class="key" data-sc="0x1D">0</div>
+  <div class="key" data-sc="0x1B">-</div><div class="key" data-sc="0x18">=</div>
+  <div class="key w15" data-sc="0x33">&#9003;</div>
+ </div>
+ <div class="krow">
+  <div class="key w15" data-sc="0x30">Tab</div>
+  <div class="key" data-sc="0x0C">Q</div><div class="key" data-sc="0x0D">W</div>
+  <div class="key" data-sc="0x0E">E</div><div class="key" data-sc="0x0F">R</div>
+  <div class="key" data-sc="0x11">T</div><div class="key" data-sc="0x10">Y</div>
+  <div class="key" data-sc="0x20">U</div><div class="key" data-sc="0x22">I</div>
+  <div class="key" data-sc="0x1F">O</div><div class="key" data-sc="0x23">P</div>
+  <div class="key" data-sc="0x21">[</div><div class="key" data-sc="0x1E">]</div>
+  <div class="key" data-sc="0x2A">\</div>
+ </div>
+ <div class="krow">
+  <div class="key w20 mod" data-sc="0x39">Caps</div>
+  <div class="key" data-sc="0x00">A</div><div class="key" data-sc="0x01">S</div>
+  <div class="key" data-sc="0x02">D</div><div class="key" data-sc="0x03">F</div>
+  <div class="key" data-sc="0x05">G</div><div class="key" data-sc="0x04">H</div>
+  <div class="key" data-sc="0x26">J</div><div class="key" data-sc="0x28">K</div>
+  <div class="key" data-sc="0x25">L</div><div class="key" data-sc="0x29">;</div>
+  <div class="key" data-sc="0x27">'</div>
+  <div class="key w20" data-sc="0x24">Ret</div>
+ </div>
+ <div class="krow">
+  <div class="key w25 mod" data-sc="0x38">Shift</div>
+  <div class="key" data-sc="0x06">Z</div><div class="key" data-sc="0x07">X</div>
+  <div class="key" data-sc="0x08">C</div><div class="key" data-sc="0x09">V</div>
+  <div class="key" data-sc="0x0B">B</div><div class="key" data-sc="0x2D">N</div>
+  <div class="key" data-sc="0x2E">M</div><div class="key" data-sc="0x2B">,</div>
+  <div class="key" data-sc="0x2F">.</div><div class="key" data-sc="0x2C">/</div>
+  <div class="key w25 mod" data-sc="0x38">Shift</div>
+ </div>
+ <div class="krow">
+  <div class="key w15 mod" data-sc="0x36">Ctrl</div>
+  <div class="key w15 mod" data-sc="0x3A">Opt</div>
+  <div class="key w15 mod" data-sc="0x37">Cmd</div>
+  <div class="key w60" data-sc="0x31">Space</div>
+  <div class="key" data-sc="0x46">&#9664;</div>
+  <div class="key" data-sc="0x48">&#9660;</div>
+  <div class="key" data-sc="0x4D">&#9650;</div>
+  <div class="key" data-sc="0x42">&#9654;</div>
+ </div>
+</div>
+
+<div id="menu">
+ <div id="menupanel">
+  <button onclick="closeMenu()">Close</button>
+  <button class="danger" onclick="wifiReset()">WiFi Reset</button>
+ </div>
+</div>
+
+<script>
+(function(){
+var trackpad=document.getElementById('trackpad');
+var clickbtn=document.getElementById('clickbtn');
+var statusEl=document.getElementById('status');
+var infoEl=document.getElementById('info');
+var ws=null;
+var locked=false;
+var btnState=0;
+
+// Mac M0110A scancodes keyed by KeyboardEvent.code
+var KEYMAP={
+KeyA:0x00,KeyB:0x0B,KeyC:0x08,KeyD:0x02,KeyE:0x0E,
+KeyF:0x03,KeyG:0x05,KeyH:0x04,KeyI:0x22,KeyJ:0x26,
+KeyK:0x28,KeyL:0x25,KeyM:0x2E,KeyN:0x2D,KeyO:0x1F,
+KeyP:0x23,KeyQ:0x0C,KeyR:0x0F,KeyS:0x01,KeyT:0x11,
+KeyU:0x20,KeyV:0x09,KeyW:0x0D,KeyX:0x07,KeyY:0x10,
+KeyZ:0x06,
+Digit1:0x12,Digit2:0x13,Digit3:0x14,Digit4:0x15,Digit5:0x17,
+Digit6:0x16,Digit7:0x1A,Digit8:0x1C,Digit9:0x19,Digit0:0x1D,
+Minus:0x1B,Equal:0x18,BracketLeft:0x21,BracketRight:0x1E,
+Backslash:0x2A,Semicolon:0x29,Quote:0x27,Comma:0x2B,
+Period:0x2F,Slash:0x2C,Backquote:0x32,
+Enter:0x24,Tab:0x30,Space:0x31,Backspace:0x33,Delete:0x33,
+ShiftLeft:0x38,ShiftRight:0x38,
+ControlLeft:0x36,ControlRight:0x36,
+AltLeft:0x3A,AltRight:0x3A,
+MetaLeft:0x37,MetaRight:0x37,
+CapsLock:0x39,
+ArrowUp:0x4D,ArrowDown:0x48,ArrowLeft:0x46,ArrowRight:0x42,
+Escape:0x35
+};
+
+function setStatus(msg,ok){statusEl.textContent=msg;statusEl.className=ok?'ok':'err';}
+
+function connect(){
+ if(ws&&ws.readyState<2)return;
+ var loc=location.hostname||'macplus.local';
+ ws=new WebSocket('ws://'+loc+':81');
+ ws.binaryType='arraybuffer';
+ ws.onopen=function(){setStatus('Connected',true);};
+ ws.onclose=function(){setStatus('Disconnected',false);setTimeout(connect,2000);};
+ ws.onerror=function(){ws.close();};
+}
+
+function sendBuf(arr){
+ if(ws&&ws.readyState===1){ws.send(new Uint8Array(arr));}
+}
+
+function sendMouse(dx,dy,btn){
+ dx=Math.max(-127,Math.min(127,dx|0));
+ dy=Math.max(-127,Math.min(127,dy|0));
+ sendBuf([77,(dx+256)&0xFF,(dy+256)&0xFF,btn?1:0]);
+}
+
+function sendKey(sc,up){sendBuf([up?85:75,sc]);}
+
+// --- Touch trackpad (mobile) ---
+var lastTX=null,lastTY=null;
+trackpad.addEventListener('touchstart',function(e){
+ e.preventDefault();
+ var t=e.touches[0];
+ lastTX=t.clientX;lastTY=t.clientY;
+},{passive:false});
+trackpad.addEventListener('touchmove',function(e){
+ e.preventDefault();
+ var t=e.touches[0];
+ if(lastTX!==null){
+  var dx=t.clientX-lastTX,dy=t.clientY-lastTY;
+  while(Math.abs(dx)>0||Math.abs(dy)>0){
+   var sdx=Math.max(-127,Math.min(127,dx));
+   var sdy=Math.max(-127,Math.min(127,dy));
+   sendMouse(sdx,sdy,btnState);
+   dx-=sdx;dy-=sdy;
+  }
+ }
+ lastTX=t.clientX;lastTY=t.clientY;
+},{passive:false});
+trackpad.addEventListener('touchend',function(e){
+ e.preventDefault();
+ lastTX=null;lastTY=null;
+},{passive:false});
+
+// --- Click button (mobile) ---
+// Long press = lock held, tap = release if locked, else click+release
+var clickLocked=false,clickTimer=null,clickWasLong=false;
+clickbtn.addEventListener('touchstart',function(e){
+ e.preventDefault();
+ if(clickLocked){return;}// will release on touchend
+ btnState=1;sendMouse(0,0,1);
+ clickbtn.classList.add('down');
+ clickWasLong=false;
+ clickTimer=setTimeout(function(){
+  clickWasLong=true;
+  clickLocked=true;
+  clickbtn.classList.remove('down');
+  clickbtn.classList.add('locked');
+  clickbtn.textContent='Locked';
+ },400);
+},{passive:false});
+clickbtn.addEventListener('touchend',function(e){
+ e.preventDefault();
+ if(clickTimer){clearTimeout(clickTimer);clickTimer=null;}
+ if(clickLocked){
+  if(clickWasLong){
+   // Long press just ended: stay locked, reset flag for next tap
+   clickWasLong=false;
+  }else{
+   // Tap while locked = release
+   clickLocked=false;
+   btnState=0;sendMouse(0,0,0);
+   clickbtn.classList.remove('locked');
+   clickbtn.textContent='Click';
+  }
+ }else if(!clickWasLong){
+  // Short tap = click and release
+  btnState=0;sendMouse(0,0,0);
+  clickbtn.classList.remove('down');
+ }
+},{passive:false});
+clickbtn.addEventListener('touchcancel',function(e){
+ if(clickTimer){clearTimeout(clickTimer);clickTimer=null;}
+ if(!clickLocked){
+  btnState=0;sendMouse(0,0,0);
+  clickbtn.classList.remove('down');
+ }
+});
+// Mouse fallback for click button
+clickbtn.addEventListener('mousedown',function(e){
+ btnState=1;sendMouse(0,0,1);
+ clickbtn.classList.add('down');
+});
+clickbtn.addEventListener('mouseup',function(e){
+ btnState=0;sendMouse(0,0,0);
+ clickbtn.classList.remove('down');
+});
+
+// --- Desktop: pointer lock on trackpad ---
+trackpad.addEventListener('click',function(){
+ if(!document.pointerLockElement){trackpad.requestPointerLock();}
+});
+document.addEventListener('pointerlockchange',function(){
+ locked=!!document.pointerLockElement;
+ infoEl.textContent=locked?'Mouse captured (Esc to release)':'On desktop: click trackpad to capture mouse';
+});
+
+trackpad.addEventListener('mousemove',function(e){
+ if(!locked)return;
+ var dx=e.movementX,dy=e.movementY;
+ while(Math.abs(dx)>0||Math.abs(dy)>0){
+  var sdx=Math.max(-127,Math.min(127,dx));
+  var sdy=Math.max(-127,Math.min(127,dy));
+  sendMouse(sdx,sdy,btnState);
+  dx-=sdx;dy-=sdy;
+ }
+});
+trackpad.addEventListener('mousedown',function(e){
+ if(locked){btnState=1;sendMouse(0,0,1);}
+});
+trackpad.addEventListener('mouseup',function(e){
+ if(locked){btnState=0;sendMouse(0,0,0);}
+});
+
+// --- Keyboard ---
+document.addEventListener('keydown',function(e){
+ if(!locked)return;
+ var sc=KEYMAP[e.code];
+ if(sc!==undefined){e.preventDefault();sendKey(sc,false);}
+});
+document.addEventListener('keyup',function(e){
+ if(!locked)return;
+ var sc=KEYMAP[e.code];
+ if(sc!==undefined){e.preventDefault();sendKey(sc,true);}
+});
+
+// --- Virtual Keyboard ---
+var kbdEl=document.getElementById('keyboard');
+var kbdBtn=document.getElementById('kbdbtn');
+var modState={};// sc -> true/false for active modifiers
+
+kbdBtn.addEventListener('click',function(){
+ kbdEl.classList.toggle('show');
+ kbdBtn.classList.toggle('active');
+});
+
+var keys=kbdEl.querySelectorAll('.key');
+for(var i=0;i<keys.length;i++){(function(k){
+ var sc=parseInt(k.getAttribute('data-sc'),16);
+ var isMod=k.classList.contains('mod');
+
+ k.addEventListener('touchstart',function(e){
+  e.preventDefault();
+  if(isMod){
+   // Toggle modifier
+   if(modState[sc]){
+    modState[sc]=false;
+    // Release modifier
+    sendKey(sc,true);
+    // Un-highlight all keys with this scancode
+    var all=kbdEl.querySelectorAll('.key.mod[data-sc="0x'+sc.toString(16).toUpperCase()+'"]');
+    if(!all.length) all=kbdEl.querySelectorAll('.key.mod[data-sc="0x'+('0'+sc.toString(16)).slice(-2).toUpperCase()+'"]');
+    for(var j=0;j<all.length;j++) all[j].classList.remove('active');
+   }else{
+    modState[sc]=true;
+    sendKey(sc,false);
+    var hex=sc.toString(16).toUpperCase();
+    if(hex.length<2) hex='0'+hex;
+    var all=kbdEl.querySelectorAll('.key.mod[data-sc="0x'+hex+'"]');
+    for(var j=0;j<all.length;j++) all[j].classList.add('active');
+   }
+  }else{
+   k.classList.add('pressed');
+   sendKey(sc,false);
+  }
+ },{passive:false});
+
+ k.addEventListener('touchend',function(e){
+  e.preventDefault();
+  if(!isMod){
+   k.classList.remove('pressed');
+   sendKey(sc,true);
+   // Release any active modifiers after key
+   releaseModifiers();
+  }
+ },{passive:false});
+
+ k.addEventListener('touchcancel',function(e){
+  if(!isMod){
+   k.classList.remove('pressed');
+   sendKey(sc,true);
+   releaseModifiers();
+  }
+ });
+})(keys[i]);}
+
+function releaseModifiers(){
+ for(var sc in modState){
+  if(modState[sc]&&parseInt(sc)!==0x39){// skip Caps Lock
+   modState[sc]=false;
+   sendKey(parseInt(sc),true);
+  }
+ }
+ var actives=kbdEl.querySelectorAll('.key.mod.active');
+ for(var i=0;i<actives.length;i++){
+  if(actives[i].getAttribute('data-sc')!=='0x39') actives[i].classList.remove('active');
+ }
+}
+
+// --- Menu ---
+document.getElementById('gear').addEventListener('click',function(){
+ document.getElementById('menu').classList.add('show');
+});
+window.closeMenu=function(){
+ document.getElementById('menu').classList.remove('show');
+};
+window.wifiReset=function(){
+ if(confirm('Reset WiFi settings? The device will restart.')){
+  fetch('/wifi-reset',{method:'POST'}).then(function(){
+   setStatus('WiFi resetting...',false);
+  });
+ }
+};
+
+connect();
+})();
+</script>
+</body>
+</html>
+)rawliteral";
+
+#endif

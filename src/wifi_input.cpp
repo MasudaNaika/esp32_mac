@@ -1,19 +1,19 @@
 /*
- * WiFi UDP input for Mac Plus emulator.
- * Receives mouse and keyboard events over UDP port 4444.
+ * WiFi WebSocket input for Mac Plus emulator.
+ * Serves HTML UI at http://macplus.local (port 80).
+ * Receives mouse and keyboard events via WebSocket (port 81).
  *
- * Protocol (little-endian):
+ * Protocol (binary frames):
  *   Mouse:    'M' dx:int8 dy:int8 buttons:uint8  (4 bytes)
  *   Key down: 'K' scancode:uint8                  (2 bytes)
  *   Key up:   'U' scancode:uint8                  (2 bytes)
- *
- * Scancodes are Mac M0110A codes (caller does the translation).
- * The desktop app will map USB/OS keycodes → Mac scancodes.
  */
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiUdp.h>
+#include <WebServer.h>
+#include <WebSocketsServer.h>
 #include "wifi_input.h"
+#include "index_html.h"
 
 extern "C" {
 #include "tme/mouse.h"
@@ -22,42 +22,62 @@ extern "C" {
 
 extern void wifiReset();
 
-#define UDP_PORT  4444
+static WebServer *httpServer;
+static WebSocketsServer *wsServer;
 
-static WiFiUDP udp;
+static void handleRoot() {
+    httpServer->send(200, "text/html", INDEX_HTML);
+}
+
+static void wsEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length) {
+    if (type == WStype_CONNECTED) {
+        printf("WS[%u] connected\n", num);
+        return;
+    }
+    if (type == WStype_DISCONNECTED) {
+        printf("WS[%u] disconnected\n", num);
+        return;
+    }
+    if (type != WStype_BIN || length < 1) return;
+
+    switch (payload[0]) {
+    case 'M':
+        if (length >= 4)
+            mouseMove((int8_t)payload[1], (int8_t)payload[2], payload[3] & 1);
+        break;
+    case 'K':
+        if (length >= 2) kbdPushKey(payload[1], 0);
+        break;
+    case 'U':
+        if (length >= 2) kbdPushKey(payload[1], 1);
+        break;
+    }
+}
 
 static void wifiInputTask(void *param) {
-    udp.begin(UDP_PORT);
-    printf("UDP input listening on port %d\n", UDP_PORT);
+    httpServer = new WebServer(80);
+    wsServer = new WebSocketsServer(81);
 
-    uint8_t buf[8];
+    httpServer->on("/", handleRoot);
+    httpServer->on("/wifi-reset", HTTP_POST, []() {
+        httpServer->send(200, "text/plain", "Resetting WiFi...");
+        delay(500);
+        wifiReset();
+    });
+    httpServer->begin();
+    printf("HTTP server started on port 80\n");
+
+    wsServer->begin();
+    wsServer->onEvent(wsEvent);
+    printf("WebSocket server started on port 81\n");
+
     while (true) {
-        int len = udp.parsePacket();
-        if (len > 0) {
-            int n = udp.read(buf, sizeof(buf));
-            if (n >= 1) {
-                switch (buf[0]) {
-                case 'M': // Mouse: dx, dy, buttons
-                    if (n >= 4) {
-                        mouseMove((int8_t)buf[1], (int8_t)buf[2], buf[3] & 1);
-                    }
-                    break;
-                case 'K': // Key down
-                    if (n >= 2) kbdPushKey(buf[1], 0);
-                    break;
-                case 'U': // Key up
-                    if (n >= 2) kbdPushKey(buf[1], 1);
-                    break;
-                case 'W': // WiFi reset
-                    wifiReset();
-                    break;
-                }
-            }
-        }
+        httpServer->handleClient();
+        wsServer->loop();
         vTaskDelay(1);
     }
 }
 
 void wifiInputInit() {
-    xTaskCreatePinnedToCore(wifiInputTask, "wifi_in", 4096, NULL, 3, NULL, 1);
+    xTaskCreatePinnedToCore(wifiInputTask, "wifi_in", 8192, NULL, 3, NULL, 1);
 }

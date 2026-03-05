@@ -252,6 +252,7 @@ static void wifiTask(void *param) {
     if (wm.autoConnect("MacPlus-Setup")) {
         printf("WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
         if (MDNS.begin("macplus")) {
+            MDNS.addService("http", "tcp", 80);
             printf("mDNS: macplus.local\n");
         }
     } else {
