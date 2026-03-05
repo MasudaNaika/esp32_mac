@@ -182,6 +182,15 @@ void LCD_Init() {
   ST7701_Init();
 }
 
+void LCD_FreeSPI() {
+  if (SPI_handle) {
+    spi_bus_remove_device(SPI_handle);
+    SPI_handle = NULL;
+  }
+  spi_bus_free(SPI2_HOST);
+  printf("LCD SPI bus freed (GPIO1/GPIO2 available for SD card)\n");
+}
+
 void LCD_addWindow(uint16_t Xstart, uint16_t Ystart, uint16_t Xend, uint16_t Yend, uint8_t* color) {
   Xend = Xend + 1;
   Yend = Yend + 1;

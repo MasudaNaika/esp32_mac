@@ -15,12 +15,16 @@
 #include "TCA9554PWR.h"
 #include "Display_ST7701.h"
 #include "wifi_input.h"
+#include "sdcard.h"
 
 extern "C" {
 #include "tme/emu.h"
 #include "tme/rtc.h"
 #include "tme/tmeconfig.h"
 }
+
+// Defined in disp.cpp
+extern void dispShowMessage(const char *lines[], int nlines);
 
 static uint8_t *romData = NULL;
 static char pram[32];
@@ -145,12 +149,33 @@ static void loadPram() {
     }
 }
 
-static bool loadRom() {
+static bool loadRomFromSD() {
+    if (!sdcardMounted()) return false;
+
+    FILE *fp = fopen("/sd/macplus.rom", "rb");
+    if (!fp) {
+        printf("ROM: /sd/macplus.rom not found\n");
+        return false;
+    }
+
+    romData = (uint8_t*)heap_caps_malloc(TME_ROMSIZE, MALLOC_CAP_SPIRAM);
+    if (!romData) {
+        fclose(fp);
+        printf("ERROR: Could not allocate ROM buffer\n");
+        return false;
+    }
+
+    size_t read = fread(romData, 1, TME_ROMSIZE, fp);
+    fclose(fp);
+    printf("ROM: Loaded %d bytes from /sd/macplus.rom\n", (int)read);
+    return true;
+}
+
+static bool loadRomFromFlash() {
     const esp_partition_t *part = esp_partition_find_first(
         (esp_partition_type_t)0x40, (esp_partition_subtype_t)0x01, NULL);
     if (!part) {
-        printf("ERROR: ROM partition not found!\n");
-        printf("Flash ROM with: esptool.py write_flash 0x110000 macplus.rom\n");
+        printf("ROM: Flash partition not found\n");
         return false;
     }
     printf("ROM partition found: offset=0x%lx size=%ld\n", part->address, part->size);
@@ -166,8 +191,20 @@ static bool loadRom() {
         printf("ERROR: Could not read ROM: %s\n", esp_err_to_name(err));
         return false;
     }
+    printf("ROM: Loaded from flash partition\n");
+    return true;
+}
 
-    // Validate: 68K reset vector. Bytes 4-7 = initial PC, should point into ROM area.
+static bool loadRom() {
+    // Try SD card first, then flash partition
+    if (!loadRomFromSD() && !loadRomFromFlash()) {
+        printf("ERROR: No ROM available!\n");
+        printf("Either place macplus.rom on SD card or flash it:\n");
+        printf("  esptool.py write_flash 0x190000 macplus.rom\n");
+        return false;
+    }
+
+    // Validate: 68K reset vector
     uint32_t initPC = ((uint32_t)romData[4] << 24) | ((uint32_t)romData[5] << 16) |
                       ((uint32_t)romData[6] << 8)  | (uint32_t)romData[7];
     printf("ROM loaded. First 8 bytes: %02X %02X %02X %02X %02X %02X %02X %02X\n",
@@ -176,24 +213,42 @@ static bool loadRom() {
     printf("Initial PC: 0x%08lX\n", (unsigned long)initPC);
 
     if (romData[0] == 0xFF && romData[1] == 0xFF) {
-        printf("ERROR: ROM appears to be blank (0xFF). Flash it first!\n");
-        printf("  esptool.py write_flash 0x110000 macplus.rom\n");
+        printf("ERROR: ROM appears to be blank (0xFF).\n");
         return false;
     }
-    // Valid Mac Plus ROM has initial PC in low ROM area (remapped to 0x000000)
-    // typically around 0x0000xxxx range
     if (initPC > 0x100000 && (initPC < 0x400000 || initPC >= 0x500000)) {
         printf("ERROR: Initial PC 0x%08lX is invalid — not a Mac Plus ROM.\n", (unsigned long)initPC);
-        printf("Flash a valid ROM with:\n");
-        printf("  esptool.py write_flash 0x110000 macplus.rom\n");
         return false;
     }
     return true;
 }
 
+void wifiReset() {
+    printf("WiFi: erasing saved credentials and restarting...\n");
+    WiFiManager wm;
+    wm.resetSettings();
+    delay(500);
+    ESP.restart();
+}
+
 static void wifiTask(void *param) {
     WiFiManager wm;
     wm.setConfigPortalTimeout(120);
+    wm.setConnectTimeout(15);
+
+    wm.setAPCallback([](WiFiManager *wm) {
+        const char *msg[] = {
+            "WiFi Setup",
+            "",
+            "Connect to AP:",
+            "MacPlus-Setup",
+            "",
+            "Then open:",
+            "192.168.4.1",
+        };
+        dispShowMessage(msg, 7);
+    });
+
     if (wm.autoConnect("MacPlus-Setup")) {
         printf("WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
         if (MDNS.begin("macplus")) {
@@ -236,6 +291,15 @@ void setup() {
     LCD_Init();
     printf("Display initialized.\n");
 
+    const char *bootMsg[] = { "Mac Plus", "Starting..." };
+    dispShowMessage(bootMsg, 2);
+
+    // Free LCD SPI bus so GPIO1/GPIO2 can be reused for SD card
+    LCD_FreeSPI();
+
+    // Init SD card (uses GPIO1=CMD, GPIO2=CLK, GPIO42=D0)
+    sdcardInit();
+
     // Report memory
     printf("Free heap: %d bytes\n", (int)esp_get_free_heap_size());
     printf("Free PSRAM: %d bytes\n", (int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
@@ -260,6 +324,15 @@ void setup() {
 }
 
 void loop() {
-    // Nothing — emulation runs in its own task
-    delay(1000);
+    // Check serial for commands
+    if (Serial.available()) {
+        String cmd = Serial.readStringUntil('\n');
+        cmd.trim();
+        if (cmd == "wifireset") {
+            wifiReset();
+        } else if (cmd == "help") {
+            printf("Commands: wifireset, help\n");
+        }
+    }
+    delay(100);
 }

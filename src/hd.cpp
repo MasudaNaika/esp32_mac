@@ -1,12 +1,13 @@
 /*
- * SCSI HD emulation using ESP32-S3 flash partition.
- * Adapted from minimacplus esp32 hd.c
+ * SCSI HD emulation — SD card file (/sd/hd.img) or flash partition fallback.
+ * SD card gives true read/write; flash partition requires erase-before-write.
  */
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "esp_partition.h"
+#include "sdcard.h"
 
 extern "C" {
 #include "tme/ncr.h"
@@ -14,6 +15,9 @@ extern "C" {
 }
 
 typedef struct {
+    // SD card file mode
+    FILE *fp;
+    // Flash partition mode (fallback)
     const esp_partition_t* part;
     int size;
 } HdPriv;
@@ -31,7 +35,7 @@ static const uint8_t inq_resp[95]={
     '1','.','0',' ',' ',' ',' ',' ', //prod rev lvl
 };
 
-static void writeSector(HdPriv *hd, unsigned int lba, uint8_t *data) {
+static void flashWriteSector(HdPriv *hd, unsigned int lba, uint8_t *data) {
     uint8_t *secdat=(uint8_t*)malloc(4096);
     assert(secdat);
     unsigned int lbaStart=lba&(~7);
@@ -46,17 +50,29 @@ static void writeSector(HdPriv *hd, unsigned int lba, uint8_t *data) {
 static int hdScsiCmd(SCSITransferData *data, unsigned int cmd, unsigned int len, unsigned int lba, void *arg) {
     int ret=0;
     HdPriv *hd=(HdPriv*)arg;
+
     if (cmd==0x8 || cmd==0x28) { //read
         printf("HD: Read %d bytes from LBA %d.\n", len*512, lba);
-        assert(esp_partition_read(hd->part, lba*512, data->data, len*512)==ESP_OK);
+        if (hd->fp) {
+            fseek(hd->fp, (long)lba*512, SEEK_SET);
+            fread(data->data, 1, len*512, hd->fp);
+        } else {
+            assert(esp_partition_read(hd->part, lba*512, data->data, len*512)==ESP_OK);
+        }
         ret=len*512;
     } else if (cmd==0x0A || cmd==0x2A) { //write
-        uint8_t *dp=data->data;
-        while(len) {
-            writeSector(hd, lba, dp);
-            lba++;
-            dp+=512;
-            len--;
+        if (hd->fp) {
+            fseek(hd->fp, (long)lba*512, SEEK_SET);
+            fwrite(data->data, 1, len*512, hd->fp);
+            fflush(hd->fp);
+        } else {
+            uint8_t *dp=data->data;
+            while(len) {
+                flashWriteSector(hd, lba, dp);
+                lba++;
+                dp+=512;
+                len--;
+            }
         }
         ret=0;
     } else if (cmd==0x12) { //inquiry
@@ -89,13 +105,29 @@ SCSIDevice *hdCreate(char *file) {
     memset(ret, 0, sizeof(SCSIDevice));
     HdPriv *hd=(HdPriv*)malloc(sizeof(HdPriv));
     memset(hd, 0, sizeof(HdPriv));
-    hd->part=esp_partition_find_first((esp_partition_type_t)0x40, (esp_partition_subtype_t)0x02, NULL);
-    if (hd->part==0) {
-        printf("Couldn't find HD partition!\n");
-    } else {
-        hd->size=hd->part->size;
-        printf("HD partition found: %d bytes\n", hd->size);
+
+    // Try SD card first
+    if (sdcardMounted()) {
+        hd->fp = fopen("/sd/hd.img", "r+b");
+        if (hd->fp) {
+            fseek(hd->fp, 0, SEEK_END);
+            hd->size = (int)ftell(hd->fp);
+            fseek(hd->fp, 0, SEEK_SET);
+            printf("HD: Using SD card /sd/hd.img (%d bytes, read/write)\n", hd->size);
+        }
     }
+
+    // Fall back to flash partition
+    if (!hd->fp) {
+        hd->part=esp_partition_find_first((esp_partition_type_t)0x40, (esp_partition_subtype_t)0x02, NULL);
+        if (hd->part==0) {
+            printf("HD: No SD card image and no flash partition!\n");
+        } else {
+            hd->size=hd->part->size;
+            printf("HD: Using flash partition (%d bytes)\n", hd->size);
+        }
+    }
+
     ret->arg=hd;
     ret->scsiCmd=hdScsiCmd;
     return ret;

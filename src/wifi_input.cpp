@@ -20,6 +20,8 @@ extern "C" {
 #include "tme/via.h"
 }
 
+extern void wifiReset();
+
 #define UDP_PORT  4444
 
 static WiFiUDP udp;
@@ -33,7 +35,7 @@ static void wifiInputTask(void *param) {
         int len = udp.parsePacket();
         if (len > 0) {
             int n = udp.read(buf, sizeof(buf));
-            if (n >= 2) {
+            if (n >= 1) {
                 switch (buf[0]) {
                 case 'M': // Mouse: dx, dy, buttons
                     if (n >= 4) {
@@ -41,10 +43,13 @@ static void wifiInputTask(void *param) {
                     }
                     break;
                 case 'K': // Key down
-                    kbdPushKey(buf[1], 0);
+                    if (n >= 2) kbdPushKey(buf[1], 0);
                     break;
                 case 'U': // Key up
-                    kbdPushKey(buf[1], 1);
+                    if (n >= 2) kbdPushKey(buf[1], 1);
+                    break;
+                case 'W': // WiFi reset
+                    wifiReset();
                     break;
                 }
             }

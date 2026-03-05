@@ -105,6 +105,10 @@ def send_key(scancode, up):
     _send(struct.pack('<bB', cmd, scancode))
 
 
+def send_wifi_reset():
+    _send(struct.pack('<b', ord('W')))
+
+
 # --- GUI ---
 
 class App:
@@ -197,6 +201,10 @@ class App:
         send_mouse(0, 0, 0)
 
     def on_key_press(self, event):
+        if event.keysym == 'F12':
+            print("Sending WiFi reset...")
+            send_wifi_reset()
+            return
         sc = self._lookup(event)
         if sc is not None:
             send_key(sc, False)
