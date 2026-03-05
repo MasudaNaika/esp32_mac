@@ -106,14 +106,17 @@ SCSIDevice *hdCreate(char *file) {
     HdPriv *hd=(HdPriv*)malloc(sizeof(HdPriv));
     memset(hd, 0, sizeof(HdPriv));
 
-    // Try SD card first
+    // Try SD card first (check multiple filenames)
     if (sdcardMounted()) {
-        hd->fp = fopen("/sd/hd.img", "r+b");
-        if (hd->fp) {
-            fseek(hd->fp, 0, SEEK_END);
-            hd->size = (int)ftell(hd->fp);
-            fseek(hd->fp, 0, SEEK_SET);
-            printf("HD: Using SD card /sd/hd.img (%d bytes, read/write)\n", hd->size);
+        const char *names[] = { "/sd/hd.img", "/sd/hd.hd", "/sd/hd.dsk", NULL };
+        for (int i = 0; names[i] && !hd->fp; i++) {
+            hd->fp = fopen(names[i], "r+b");
+            if (hd->fp) {
+                fseek(hd->fp, 0, SEEK_END);
+                hd->size = (int)ftell(hd->fp);
+                fseek(hd->fp, 0, SEEK_SET);
+                printf("HD: Using SD card %s (%d bytes, read/write)\n", names[i], hd->size);
+            }
         }
     }
 
