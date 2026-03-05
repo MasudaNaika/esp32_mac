@@ -1,6 +1,6 @@
 # Mac Plus Emulator on ESP32-S3
 
-A Macintosh Plus emulator running on the **Waveshare ESP32-S3-Touch-LCD-2.8B** board. Mouse and keyboard input is sent over WiFi as UDP packets, with a Python desktop client that maps your mouse position to the Mac cursor and translates keystrokes to Mac scancodes.
+A Macintosh Plus emulator running on the **Waveshare ESP32-S3-Touch-LCD-2.8B** board. Mouse and keyboard input via a built-in mobile web UI (WebSocket) with trackpad, click button, and virtual keyboard.
 
 Based on [Spritetm's minimacplus](https://github.com/Spritetm/minimacplus), adapted for ESP32-S3 with OPI PSRAM and a 480x640 ST7701 RGB display.
 
@@ -23,9 +23,7 @@ Based on [Spritetm's minimacplus](https://github.com/Spritetm/minimacplus), adap
 - Boot status messages on screen (WiFi setup instructions, etc.)
 - PRAM saved to NVS
 - WiFi with captive portal config (WiFiManager) + mDNS (`macplus.local`)
-- UDP mouse/keyboard input over WiFi (port 4444)
-- Built-in mobile web UI with trackpad, click button, and virtual keyboard
-- Python input client with absolute mouse positioning (`tools/mac_input.py`)
+- Built-in mobile web UI with trackpad, click button, and virtual keyboard (WebSocket)
 
 ## Storage: SD Card & Flash
 
@@ -96,8 +94,7 @@ Once connected, the device advertises as `macplus.local` via mDNS.
 
 To reset WiFi credentials:
 - Send `wifireset` over serial, or
-- Press **F12** in the input client, or
-- Send a UDP packet containing `W` to port 4444
+- Tap the gear icon in the web UI and select WiFi Reset
 
 ### 5. Mobile web UI
 
@@ -109,19 +106,6 @@ Open `http://macplus.local` on your phone. The web UI provides:
   - Modifier keys (Shift, Ctrl, Opt, Cmd) are sticky: tap to activate, auto-release after the next key
   - Caps Lock is a true toggle: tap to engage, tap again to disengage
 - **Settings** (gear icon) — WiFi reset
-
-### 6. Input client
-
-```bash
-python3 tools/mac_input.py [host] [port]
-```
-
-Defaults to `macplus.local:4444`. Move mouse over the window to position the Mac cursor (absolute mapping). Click to click. Keys are mapped to Mac M0110A scancodes.
-
-Special keys:
-- **F12** — Reset WiFi credentials (ESP32 reboots into config portal)
-
-Note: Anaconda Python may block UDP sockets — the script auto-detects this and uses a `/usr/bin/python3` helper.
 
 ## SD Card Pin Mapping
 
