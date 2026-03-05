@@ -122,7 +122,7 @@ static void patchRomForLargeScreen(uint8_t *rom) {
     rom_put_word(rom, 7790, W);   // screenBits.bounds.right
     rom_put_word(rom, 7810, H);   // screen height
 
-    printf("ROM PATCH: Applied %d patches for %dx%d screen\n", 30, W, H);
+    printf("ROM PATCH: Applied patches for %dx%d screen\n", W, H);
 }
 
 // Called by rtc.c when PRAM changes — save to NVS

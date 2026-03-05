@@ -215,7 +215,7 @@ static void ramInit() {
 	vidMem=(unsigned char*)heap_caps_malloc(TME_VIDMEM_SIZE, MALLOC_CAP_SPIRAM);
 	assert(vidMem);
 	printf("Video RAM allocated at %p (%d bytes)\n", vidMem, TME_VIDMEM_SIZE);
-	memset(vidMem, 0xFF, TME_VIDMEM_SIZE);  // white screen initially
+	memset(vidMem, 0xFF, TME_VIDMEM_SIZE);
 
 	macFb[0]=&vidMem[TME_SCREENBUF];
 	macFb[1]=&vidMem[TME_SCREENBUF_ALT];
