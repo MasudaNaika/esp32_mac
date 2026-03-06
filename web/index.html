@@ -61,11 +61,18 @@ body{background:#111;color:#ccc;font-family:monospace;display:flex;flex-directio
 #menupanel button:hover{background:#444}
 #menupanel button.danger{color:#f66;border-color:#633}
 #menupanel button.danger:hover{background:#422}
+#connectbtn{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+ background:#164;color:#0f0;border:2px solid #0a0;padding:12px 24px;
+ font-size:16px;font-family:monospace;cursor:pointer;z-index:1}
+#connectbtn:hover{background:#1a5}
+#connectbtn.hidden{display:none}
 </style>
 </head>
 <body>
 <div id="status" class="err">Not connected</div>
-<div id="trackpad"></div>
+<div id="trackpad">
+ <button id="connectbtn" onclick="bleConnect()">Connect</button>
+</div>
 <div id="controls">
  <div id="clickbtn">Click</div>
  <div id="kbdbtn" class="ctrlbtn">&#9000;</div>
@@ -128,7 +135,6 @@ body{background:#111;color:#ccc;font-family:monospace;display:flex;flex-directio
 <div id="menu">
  <div id="menupanel">
   <button onclick="closeMenu()">Close</button>
-  <button onclick="bleConnect()">Reconnect BLE</button>
   <button class="danger" onclick="bleDisconnect()">Disconnect</button>
  </div>
 </div>
@@ -143,6 +149,7 @@ var locked=false;
 var btnState=0;
 
 var bleDevice=null,bleChar=null;
+var connectBtn=document.getElementById('connectbtn');
 
 var SERVICE_UUID='931e0100-6858-4e55-b637-c3cfdab5ef5f';
 var CHAR_INPUT_UUID='931e0101-6858-4e55-b637-c3cfdab5ef5f';
@@ -196,12 +203,14 @@ window.bleConnect=async function(){
   bleDevice.addEventListener('gattserverdisconnected',function(){
    bleChar=null;
    setStatus('Disconnected',false);
+   connectBtn.classList.remove('hidden');
   });
   setStatus('Connecting...',false);
   var server=await bleDevice.gatt.connect();
   var service=await server.getPrimaryService(SERVICE_UUID);
   bleChar=await service.getCharacteristic(CHAR_INPUT_UUID);
   setStatus('Connected via BLE',true);
+  connectBtn.classList.add('hidden');
   closeMenu();
  }catch(e){
   setStatus('BLE: '+e.message,false);
@@ -214,17 +223,20 @@ window.bleDisconnect=function(){
  }
  bleChar=null;
  setStatus('Disconnected',false);
+ connectBtn.classList.remove('hidden');
  closeMenu();
 };
 
 // --- Touch trackpad (mobile) ---
 var lastTX=null,lastTY=null;
 trackpad.addEventListener('touchstart',function(e){
+ if(e.target.id==='connectbtn')return;
  e.preventDefault();
  var t=e.touches[0];
  lastTX=t.clientX;lastTY=t.clientY;
 },{passive:false});
 trackpad.addEventListener('touchmove',function(e){
+ if(e.target.id==='connectbtn')return;
  e.preventDefault();
  var t=e.touches[0];
  if(lastTX!==null){
@@ -239,6 +251,7 @@ trackpad.addEventListener('touchmove',function(e){
  lastTX=t.clientX;lastTY=t.clientY;
 },{passive:false});
 trackpad.addEventListener('touchend',function(e){
+ if(e.target.id==='connectbtn')return;
  e.preventDefault();
  lastTX=null;lastTY=null;
 },{passive:false});
@@ -410,6 +423,7 @@ window.closeMenu=function(){
 
 // Auto-prompt for BLE connection on first interaction
 setStatus('Tap Connect to pair via BLE',false);
+connectBtn.classList.remove('hidden');
 })();
 </script>
 </body>
