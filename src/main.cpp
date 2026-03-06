@@ -4,8 +4,6 @@
  */
 #include <Arduino.h>
 #include <string.h>
-#include <WiFiManager.h>
-#include <ESPmDNS.h>
 #include "esp_partition.h"
 #include "esp_heap_caps.h"
 #include "nvs_flash.h"
@@ -14,7 +12,7 @@
 #include "I2C_Driver.h"
 #include "TCA9554PWR.h"
 #include "Display_ST7701.h"
-#include "wifi_input.h"
+#include "ble_input.h"
 #include "sdcard.h"
 
 extern "C" {
@@ -223,44 +221,6 @@ static bool loadRom() {
     return true;
 }
 
-void wifiReset() {
-    printf("WiFi: erasing saved credentials and restarting...\n");
-    WiFiManager wm;
-    wm.resetSettings();
-    delay(500);
-    ESP.restart();
-}
-
-static void wifiTask(void *param) {
-    WiFiManager wm;
-    wm.setConfigPortalTimeout(120);
-    wm.setConnectTimeout(15);
-
-    wm.setAPCallback([](WiFiManager *wm) {
-        const char *msg[] = {
-            "WiFi Setup",
-            "",
-            "Connect to AP:",
-            "MacPlus-Setup",
-            "",
-            "Then open:",
-            "192.168.4.1",
-        };
-        dispShowMessage(msg, 7);
-    });
-
-    if (wm.autoConnect("MacPlus-Setup")) {
-        printf("WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
-        if (MDNS.begin("macplus")) {
-            MDNS.addService("http", "tcp", 80);
-            printf("mDNS: macplus.local\n");
-        }
-    } else {
-        printf("WiFi: portal timed out, continuing without network\n");
-    }
-    wifiInputInit();
-    vTaskDelete(NULL);
-}
 
 static void emuTask(void *param) {
 
@@ -320,8 +280,8 @@ void setup() {
     // Start emulation on core 0 (core 1 handles display refresh from emu)
     xTaskCreatePinnedToCore(emuTask, "emu", 8192, NULL, 5, NULL, 0);
 
-    // WiFi setup in its own task (autoConnect blocks, must not starve display)
-    xTaskCreatePinnedToCore(wifiTask, "wifi", 8192, NULL, 1, NULL, 1);
+    // BLE input (keyboard/mouse via Web Bluetooth)
+    bleInputInit();
 }
 
 void loop() {
@@ -329,10 +289,8 @@ void loop() {
     if (Serial.available()) {
         String cmd = Serial.readStringUntil('\n');
         cmd.trim();
-        if (cmd == "wifireset") {
-            wifiReset();
-        } else if (cmd == "help") {
-            printf("Commands: wifireset, help\n");
+        if (cmd == "help") {
+            printf("Commands: help\n");
         }
     }
     delay(100);

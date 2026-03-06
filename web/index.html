@@ -1,7 +1,4 @@
-#ifndef INDEX_HTML_H
-#define INDEX_HTML_H
-
-static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
+<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -67,7 +64,7 @@ body{background:#111;color:#ccc;font-family:monospace;display:flex;flex-directio
 </style>
 </head>
 <body>
-<div id="status" class="err">Connecting...</div>
+<div id="status" class="err">Not connected</div>
 <div id="trackpad"></div>
 <div id="controls">
  <div id="clickbtn">Click</div>
@@ -131,7 +128,8 @@ body{background:#111;color:#ccc;font-family:monospace;display:flex;flex-directio
 <div id="menu">
  <div id="menupanel">
   <button onclick="closeMenu()">Close</button>
-  <button class="danger" onclick="wifiReset()">WiFi Reset</button>
+  <button onclick="bleConnect()">Reconnect BLE</button>
+  <button class="danger" onclick="bleDisconnect()">Disconnect</button>
  </div>
 </div>
 
@@ -141,9 +139,13 @@ var trackpad=document.getElementById('trackpad');
 var clickbtn=document.getElementById('clickbtn');
 var statusEl=document.getElementById('status');
 var infoEl=document.getElementById('info');
-var ws=null;
 var locked=false;
 var btnState=0;
+
+var bleDevice=null,bleChar=null;
+
+var SERVICE_UUID='931e0100-6858-4e55-b637-c3cfdab5ef5f';
+var CHAR_INPUT_UUID='931e0101-6858-4e55-b637-c3cfdab5ef5f';
 
 // Mac M0110A scancodes keyed by KeyboardEvent.code
 var KEYMAP={
@@ -170,18 +172,11 @@ Escape:0x35
 
 function setStatus(msg,ok){statusEl.textContent=msg;statusEl.className=ok?'ok':'err';}
 
-function connect(){
- if(ws&&ws.readyState<2)return;
- var loc=location.hostname||'macplus.local';
- ws=new WebSocket('ws://'+loc+':81');
- ws.binaryType='arraybuffer';
- ws.onopen=function(){setStatus('Connected',true);};
- ws.onclose=function(){setStatus('Disconnected',false);setTimeout(connect,2000);};
- ws.onerror=function(){ws.close();};
-}
+function isConnected(){return bleChar!==null;}
 
 function sendBuf(arr){
- if(ws&&ws.readyState===1){ws.send(new Uint8Array(arr));}
+ if(!isConnected())return;
+ try{bleChar.writeValueWithoutResponse(new Uint8Array(arr));}catch(e){}
 }
 
 function sendMouse(dx,dy,btn){
@@ -191,6 +186,36 @@ function sendMouse(dx,dy,btn){
 }
 
 function sendKey(sc,up){sendBuf([up?85:75,sc]);}
+
+window.bleConnect=async function(){
+ try{
+  setStatus('Scanning...',false);
+  bleDevice=await navigator.bluetooth.requestDevice({
+   filters:[{services:[SERVICE_UUID]}]
+  });
+  bleDevice.addEventListener('gattserverdisconnected',function(){
+   bleChar=null;
+   setStatus('Disconnected',false);
+  });
+  setStatus('Connecting...',false);
+  var server=await bleDevice.gatt.connect();
+  var service=await server.getPrimaryService(SERVICE_UUID);
+  bleChar=await service.getCharacteristic(CHAR_INPUT_UUID);
+  setStatus('Connected via BLE',true);
+  closeMenu();
+ }catch(e){
+  setStatus('BLE: '+e.message,false);
+ }
+};
+
+window.bleDisconnect=function(){
+ if(bleDevice&&bleDevice.gatt.connected){
+  bleDevice.gatt.disconnect();
+ }
+ bleChar=null;
+ setStatus('Disconnected',false);
+ closeMenu();
+};
 
 // --- Touch trackpad (mobile) ---
 var lastTX=null,lastTY=null;
@@ -219,11 +244,10 @@ trackpad.addEventListener('touchend',function(e){
 },{passive:false});
 
 // --- Click button (mobile) ---
-// Long press = lock held, tap = release if locked, else click+release
 var clickLocked=false,clickTimer=null,clickWasLong=false;
 clickbtn.addEventListener('touchstart',function(e){
  e.preventDefault();
- if(clickLocked){return;}// will release on touchend
+ if(clickLocked){return;}
  btnState=1;sendMouse(0,0,1);
  clickbtn.classList.add('down');
  clickWasLong=false;
@@ -240,17 +264,14 @@ clickbtn.addEventListener('touchend',function(e){
  if(clickTimer){clearTimeout(clickTimer);clickTimer=null;}
  if(clickLocked){
   if(clickWasLong){
-   // Long press just ended: stay locked, reset flag for next tap
    clickWasLong=false;
   }else{
-   // Tap while locked = release
    clickLocked=false;
    btnState=0;sendMouse(0,0,0);
    clickbtn.classList.remove('locked');
    clickbtn.textContent='Click';
   }
  }else if(!clickWasLong){
-  // Short tap = click and release
   btnState=0;sendMouse(0,0,0);
   clickbtn.classList.remove('down');
  }
@@ -313,7 +334,7 @@ document.addEventListener('keyup',function(e){
 // --- Virtual Keyboard ---
 var kbdEl=document.getElementById('keyboard');
 var kbdBtn=document.getElementById('kbdbtn');
-var modState={};// sc -> true/false for active modifiers
+var modState={};
 
 kbdBtn.addEventListener('click',function(){
  kbdEl.classList.toggle('show');
@@ -328,12 +349,9 @@ for(var i=0;i<keys.length;i++){(function(k){
  k.addEventListener('touchstart',function(e){
   e.preventDefault();
   if(isMod){
-   // Toggle modifier
    if(modState[sc]){
     modState[sc]=false;
-    // Release modifier
     sendKey(sc,true);
-    // Un-highlight all keys with this scancode
     var all=kbdEl.querySelectorAll('.key.mod[data-sc="0x'+sc.toString(16).toUpperCase()+'"]');
     if(!all.length) all=kbdEl.querySelectorAll('.key.mod[data-sc="0x'+('0'+sc.toString(16)).slice(-2).toUpperCase()+'"]');
     for(var j=0;j<all.length;j++) all[j].classList.remove('active');
@@ -356,7 +374,6 @@ for(var i=0;i<keys.length;i++){(function(k){
   if(!isMod){
    k.classList.remove('pressed');
    sendKey(sc,true);
-   // Release any active modifiers after key
    releaseModifiers();
   }
  },{passive:false});
@@ -372,7 +389,7 @@ for(var i=0;i<keys.length;i++){(function(k){
 
 function releaseModifiers(){
  for(var sc in modState){
-  if(modState[sc]&&parseInt(sc)!==0x39){// skip Caps Lock
+  if(modState[sc]&&parseInt(sc)!==0x39){
    modState[sc]=false;
    sendKey(parseInt(sc),true);
   }
@@ -390,19 +407,10 @@ document.getElementById('gear').addEventListener('click',function(){
 window.closeMenu=function(){
  document.getElementById('menu').classList.remove('show');
 };
-window.wifiReset=function(){
- if(confirm('Reset WiFi settings? The device will restart.')){
-  fetch('/wifi-reset',{method:'POST'}).then(function(){
-   setStatus('WiFi resetting...',false);
-  });
- }
-};
 
-connect();
+// Auto-prompt for BLE connection on first interaction
+setStatus('Tap Connect to pair via BLE',false);
 })();
 </script>
 </body>
 </html>
-)rawliteral";
-
-#endif

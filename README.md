@@ -1,6 +1,6 @@
 # Mac Plus Emulator on ESP32-S3
 
-A Macintosh Plus emulator running on the **Waveshare ESP32-S3-Touch-LCD-2.8B** board. Mouse and keyboard input via a built-in mobile web UI (WebSocket) with trackpad, click button, and virtual keyboard.
+A Macintosh Plus emulator running on the **Waveshare ESP32-S3-Touch-LCD-2.8B** board. Mouse and keyboard input via BLE (Web Bluetooth) with a standalone web UI featuring trackpad, click button, and virtual keyboard.
 
 Based on [Spritetm's minimacplus](https://github.com/Spritetm/minimacplus), adapted for ESP32-S3 with OPI PSRAM and a 480x640 ST7701 RGB display.
 
@@ -20,10 +20,10 @@ Based on [Spritetm's minimacplus](https://github.com/Spritetm/minimacplus), adap
 - NCR 5380 SCSI with HD from SD card or flash partition
 - VIA 6522, Zilog 8530 SCC, IWM (stub)
 - Display rotated 90° CW, 1:1 pixel mapping (640x480 patched ROM on 480x640)
-- Boot status messages on screen (WiFi setup instructions, etc.)
+- Boot status messages on screen
 - PRAM saved to NVS
-- WiFi with captive portal config (WiFiManager) + mDNS (`macplus.local`)
-- Built-in mobile web UI with trackpad, click button, and virtual keyboard (WebSocket)
+- BLE GATT server for keyboard/mouse input via Web Bluetooth
+- Standalone web UI (`web/index.html`) with trackpad, click button, and virtual keyboard
 
 ## Storage: SD Card & Flash
 
@@ -86,26 +86,28 @@ mame macplus -window -flop1 system6.dc42 -hard1 hd.img
 # In MAME: use Apple HD SC Setup to initialize, then install System
 ```
 
-### 4. WiFi setup
+### 4. Web UI (BLE input)
 
-On first boot, the ESP32 creates an AP called **MacPlus-Setup**. Connect to it and use the captive portal (192.168.4.1) to configure your WiFi network. Credentials are saved — subsequent boots auto-connect. The setup instructions are shown on the LCD screen.
+The web UI is a standalone HTML file at `web/index.html`. It connects to the ESP32 over BLE using the Web Bluetooth API.
 
-Once connected, the device advertises as `macplus.local` via mDNS.
+**Requirements:**
+- Chrome (Android, Windows, macOS, Linux) or Edge — Safari and Firefox do not support Web Bluetooth
+- The page must be served over HTTPS or from localhost (Web Bluetooth requirement)
 
-To reset WiFi credentials:
-- Send `wifireset` over serial, or
-- Tap the gear icon in the web UI and select WiFi Reset
+**To use:**
+1. Host `web/index.html` on any web server, or open it from localhost
+2. Open the page in Chrome on your phone/computer
+3. Tap the gear icon and select **Reconnect BLE**
+4. Select **MacPlus** from the browser's Bluetooth pairing dialog
 
-### 5. Mobile web UI
-
-Open `http://macplus.local` on your phone. The web UI provides:
+The web UI provides:
 
 - **Trackpad** — touch and drag to move the Mac cursor
 - **Click button** — tap for a single click; long press (~400ms) to lock the button down for dragging, tap again to release
 - **Virtual keyboard** — tap the keyboard icon to show/hide a full Mac M0110A layout
   - Modifier keys (Shift, Ctrl, Opt, Cmd) are sticky: tap to activate, auto-release after the next key
   - Caps Lock is a true toggle: tap to engage, tap again to disengage
-- **Settings** (gear icon) — WiFi reset
+- **Settings** (gear icon) — reconnect/disconnect BLE
 
 ## SD Card Pin Mapping
 
