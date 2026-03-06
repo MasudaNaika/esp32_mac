@@ -17,7 +17,7 @@ Based on [Spritetm's minimacplus](https://github.com/Spritetm/minimacplus), adap
 
 ## Features
 
-- Musashi 68000 CPU emulator running at ~4MHz (~50% of native 7.8MHz)
+- Musashi 68000 CPU emulator running at ~5.5MHz (~70% of native 7.83MHz)
 - 4MB Mac RAM in OPI PSRAM (direct memory-mapped, no cache layer)
 - NCR 5380 SCSI with HD from SD card or flash partition
 - VIA 6522, Zilog 8530 SCC, IWM (stub)
