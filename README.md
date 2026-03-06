@@ -98,8 +98,10 @@ The web UI is a standalone HTML file at `web/index.html`. It connects to the ESP
 - Chrome (Android, Windows, macOS, Linux) or Edge — Safari and Firefox do not support Web Bluetooth
 - The page must be served over HTTPS or from localhost (Web Bluetooth requirement)
 
+A hosted version is available at **https://memention.com/esp32_mac/**
+
 **To use:**
-1. Host `web/index.html` on any web server, or open it from localhost
+1. Open the hosted version above, or serve `web/index.html` yourself
 2. Open the page in Chrome on your phone/computer
 3. Tap the gear icon and select **Reconnect BLE**
 4. Select **MacPlus** from the browser's Bluetooth pairing dialog
