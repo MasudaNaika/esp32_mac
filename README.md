@@ -2,6 +2,8 @@
 
 # Mac Plus Emulator on ESP32-S3
 
+<img src="esp32_mac.png" width="480" alt="Mac Plus emulator running on ESP32-S3">
+
 A Macintosh Plus emulator running on the **Waveshare ESP32-S3-Touch-LCD-2.8B** board. Mouse and keyboard input via BLE (Web Bluetooth) with a standalone web UI featuring trackpad, click button, and virtual keyboard.
 
 Based on [Spritetm's minimacplus](https://github.com/Spritetm/minimacplus), adapted for ESP32-S3 with OPI PSRAM and a 480x640 ST7701 RGB display.
