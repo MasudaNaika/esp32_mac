@@ -4,7 +4,7 @@
 
 <img src="images/esp32_mac.jpeg" height="200" alt="Mac Plus emulator running on ESP32-S3"><img src="images/build.jpg" height="200" alt="Build"><img src="images/maclock.jpg" height="200" alt="Final">
 
-The enclosure is a [Maclock](https://www.aliexpress.com/w/wholesale-maclock.html) — a miniature Macintosh-shaped phone holder. The ESP32-S3 board fits perfectly inside, turning it into a tiny working Mac Plus.
+The enclosure is a [Maclock](https://www.aliexpress.com/w/wholesale-maclock.html) — a miniature Macintosh-shaped desk clock. The ESP32-S3 board fits perfectly inside, turning it into a tiny working Mac Plus.
 
 A Macintosh Plus emulator running on the **Waveshare ESP32-S3-Touch-LCD-2.8B** board. Mouse and keyboard input via BLE (Web Bluetooth) with a standalone web UI featuring trackpad, click button, and virtual keyboard.
 
