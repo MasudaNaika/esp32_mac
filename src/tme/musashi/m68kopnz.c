@@ -1307,7 +1307,7 @@ void m68k_op_not_8_al(void)
 }
 
 
-void m68k_op_not_16_d(void)
+void M68K_OP_HOT_ATTR m68k_op_not_16_d(void)
 {
 	uint* r_dst = &DY;
 	uint res = MASK_OUT_ABOVE_16(~*r_dst);
@@ -1419,7 +1419,7 @@ void m68k_op_not_16_al(void)
 }
 
 
-void m68k_op_not_32_d(void)
+void M68K_OP_HOT_ATTR m68k_op_not_32_d(void)
 {
 	uint* r_dst = &DY;
 	uint res = *r_dst = MASK_OUT_ABOVE_32(~*r_dst);
@@ -1672,7 +1672,7 @@ void m68k_op_or_8_er_i(void)
 }
 
 
-void m68k_op_or_16_er_d(void)
+void M68K_OP_HOT_ATTR m68k_op_or_16_er_d(void)
 {
 	uint res = MASK_OUT_ABOVE_16((DX |= MASK_OUT_ABOVE_16(DY)));
 
@@ -1793,7 +1793,7 @@ void m68k_op_or_16_er_i(void)
 }
 
 
-void m68k_op_or_32_er_d(void)
+void M68K_OP_HOT_ATTR m68k_op_or_32_er_d(void)
 {
 	uint res = DX |= DY;
 
@@ -2723,7 +2723,7 @@ void m68k_op_pea_32_ai(void)
 }
 
 
-void m68k_op_pea_32_di(void)
+void M68K_OP_HOT_ATTR m68k_op_pea_32_di(void)
 {
 	uint ea = EA_AY_DI_32();
 
@@ -2791,6 +2791,9 @@ void m68k_op_ror_8_s(void)
 	uint src = MASK_OUT_ABOVE_8(*r_dst);
 	uint res = ROR_8(src, shift);
 
+	if(orig_shift != 0)
+		USE_CYCLES(orig_shift<<CYC_SHIFT);
+
 	*r_dst = MASK_OUT_BELOW_8(*r_dst) | res;
 
 	FLAG_N = NFLAG_8(res);
@@ -2807,6 +2810,9 @@ void m68k_op_ror_16_s(void)
 	uint src = MASK_OUT_ABOVE_16(*r_dst);
 	uint res = ROR_16(src, shift);
 
+	if(shift != 0)
+		USE_CYCLES(shift<<CYC_SHIFT);
+
 	*r_dst = MASK_OUT_BELOW_16(*r_dst) | res;
 
 	FLAG_N = NFLAG_16(res);
@@ -2822,6 +2828,9 @@ void m68k_op_ror_32_s(void)
 	uint shift = (((REG_IR >> 9) - 1) & 7) + 1;
 	uint64 src = *r_dst;
 	uint res = ROR_32(src, shift);
+
+	if(shift != 0)
+		USE_CYCLES(shift<<CYC_SHIFT);
 
 	*r_dst = res;
 
@@ -3026,6 +3035,9 @@ void m68k_op_rol_8_s(void)
 	uint src = MASK_OUT_ABOVE_8(*r_dst);
 	uint res = ROL_8(src, shift);
 
+	if(orig_shift != 0)
+		USE_CYCLES(orig_shift<<CYC_SHIFT);
+
 	*r_dst = MASK_OUT_BELOW_8(*r_dst) | res;
 
 	FLAG_N = NFLAG_8(res);
@@ -3042,6 +3054,9 @@ void m68k_op_rol_16_s(void)
 	uint src = MASK_OUT_ABOVE_16(*r_dst);
 	uint res = ROL_16(src, shift);
 
+	if(shift != 0)
+		USE_CYCLES(shift<<CYC_SHIFT);
+
 	*r_dst = MASK_OUT_BELOW_16(*r_dst) | res;
 
 	FLAG_N = NFLAG_16(res);
@@ -3057,6 +3072,9 @@ void m68k_op_rol_32_s(void)
 	uint shift = (((REG_IR >> 9) - 1) & 7) + 1;
 	uint64 src = *r_dst;
 	uint res = ROL_32(src, shift);
+
+	if(shift != 0)
+		USE_CYCLES(shift<<CYC_SHIFT);
 
 	*r_dst = res;
 
@@ -3277,6 +3295,9 @@ void m68k_op_roxr_8_s(void)
 	uint src = MASK_OUT_ABOVE_8(*r_dst);
 	uint res = ROR_9(src | (XFLAG_AS_1() << 8), shift);
 
+	if(shift != 0)
+		USE_CYCLES(shift<<CYC_SHIFT);
+
 	FLAG_C = FLAG_X = res;
 	res = MASK_OUT_ABOVE_8(res);
 
@@ -3294,6 +3315,9 @@ void m68k_op_roxr_16_s(void)
 	uint shift = (((REG_IR >> 9) - 1) & 7) + 1;
 	uint src = MASK_OUT_ABOVE_16(*r_dst);
 	uint res = ROR_17(src | (XFLAG_AS_1() << 16), shift);
+
+	if(shift != 0)
+		USE_CYCLES(shift<<CYC_SHIFT);
 
 	FLAG_C = FLAG_X = res >> 8;
 	res = MASK_OUT_ABOVE_16(res);
@@ -3315,6 +3339,9 @@ void m68k_op_roxr_32_s(void)
 	uint64 src   = *r_dst;
 	uint64 res   = src | (((uint64)XFLAG_AS_1()) << 32);
 
+	if(shift != 0)
+		USE_CYCLES(shift<<CYC_SHIFT);
+
 	res = ROR_33_64(res, shift);
 
 	FLAG_C = FLAG_X = res >> 24;
@@ -3333,6 +3360,9 @@ void m68k_op_roxr_32_s(void)
 	uint src = *r_dst;
 	uint res = MASK_OUT_ABOVE_32((ROR_33(src, shift) & ~(1 << (32 - shift))) | (XFLAG_AS_1() << (32 - shift)));
 	uint new_x_flag = src & (1 << (shift - 1));
+
+	if(shift != 0)
+		USE_CYCLES(shift<<CYC_SHIFT);
 
 	*r_dst = res;
 
@@ -3591,6 +3621,9 @@ void m68k_op_roxl_8_s(void)
 	uint src = MASK_OUT_ABOVE_8(*r_dst);
 	uint res = ROL_9(src | (XFLAG_AS_1() << 8), shift);
 
+	if(shift != 0)
+		USE_CYCLES(shift<<CYC_SHIFT);
+
 	FLAG_C = FLAG_X = res;
 	res = MASK_OUT_ABOVE_8(res);
 
@@ -3608,6 +3641,9 @@ void m68k_op_roxl_16_s(void)
 	uint shift = (((REG_IR >> 9) - 1) & 7) + 1;
 	uint src = MASK_OUT_ABOVE_16(*r_dst);
 	uint res = ROL_17(src | (XFLAG_AS_1() << 16), shift);
+
+	if(shift != 0)
+		USE_CYCLES(shift<<CYC_SHIFT);
 
 	FLAG_C = FLAG_X = res >> 8;
 	res = MASK_OUT_ABOVE_16(res);
@@ -3629,6 +3665,9 @@ void m68k_op_roxl_32_s(void)
 	uint64 src   = *r_dst;
 	uint64 res   = src | (((uint64)XFLAG_AS_1()) << 32);
 
+	if(shift != 0)
+		USE_CYCLES(shift<<CYC_SHIFT);
+
 	res = ROL_33_64(res, shift);
 
 	FLAG_C = FLAG_X = res >> 24;
@@ -3647,6 +3686,9 @@ void m68k_op_roxl_32_s(void)
 	uint src = *r_dst;
 	uint res = MASK_OUT_ABOVE_32((ROL_33(src, shift) & ~(1 << (shift - 1))) | (XFLAG_AS_1() << (shift - 1)));
 	uint new_x_flag = src & (1 << (32 - shift));
+
+	if(shift != 0)
+		USE_CYCLES(shift<<CYC_SHIFT);
 
 	*r_dst = res;
 
@@ -4021,7 +4063,7 @@ void m68k_op_rtr_32(void)
 }
 
 
-void m68k_op_rts_32(void)
+void M68K_OP_HOT_ATTR m68k_op_rts_32(void)
 {
 	m68ki_trace_t0();				   /* auto-disable (see m68kcpu.h) */
 	m68ki_jump(m68ki_pull_32());
@@ -4194,7 +4236,7 @@ void m68k_op_st_8_pd7(void)
 }
 
 
-void m68k_op_st_8_di(void)
+void M68K_OP_HOT_ATTR m68k_op_st_8_di(void)
 {
 	m68ki_write_8(EA_AY_DI_8(), 0xff);
 }
@@ -5210,8 +5252,8 @@ void m68k_op_stop(void)
 		m68ki_trace_t0();			   /* auto-disable (see m68kcpu.h) */
 		CPU_STOPPED |= STOP_LEVEL_STOP;
 		m68ki_set_sr(new_sr);
-		if(m68ki_remaining_cycles >= CYC_INSTRUCTION[REG_IR])
-			m68ki_remaining_cycles = CYC_INSTRUCTION[REG_IR];
+		if(m68ki_remaining_cycles >= M68KI_INSTRUCTION_CYCLES(REG_IR))
+			m68ki_remaining_cycles = M68KI_INSTRUCTION_CYCLES(REG_IR);
 		else
 			USE_ALL_CYCLES();
 		return;
@@ -5428,7 +5470,7 @@ void m68k_op_sub_8_er_i(void)
 }
 
 
-void m68k_op_sub_16_er_d(void)
+void M68K_OP_HOT_ATTR m68k_op_sub_16_er_d(void)
 {
 	uint* r_dst = &DX;
 	uint src = MASK_OUT_ABOVE_16(DY);
@@ -5508,7 +5550,7 @@ void m68k_op_sub_16_er_pd(void)
 }
 
 
-void m68k_op_sub_16_er_di(void)
+void M68K_OP_HOT_ATTR m68k_op_sub_16_er_di(void)
 {
 	uint* r_dst = &DX;
 	uint src = OPER_AY_DI_16();
@@ -5620,7 +5662,7 @@ void m68k_op_sub_16_er_i(void)
 }
 
 
-void m68k_op_sub_32_er_d(void)
+void M68K_OP_HOT_ATTR m68k_op_sub_32_er_d(void)
 {
 	uint* r_dst = &DX;
 	uint src = DY;
@@ -5700,7 +5742,7 @@ void m68k_op_sub_32_er_pd(void)
 }
 
 
-void m68k_op_sub_32_er_di(void)
+void M68K_OP_HOT_ATTR m68k_op_sub_32_er_di(void)
 {
 	uint* r_dst = &DX;
 	uint src = OPER_AY_DI_32();
@@ -6004,7 +6046,7 @@ void m68k_op_sub_16_re_pd(void)
 }
 
 
-void m68k_op_sub_16_re_di(void)
+void M68K_OP_HOT_ATTR m68k_op_sub_16_re_di(void)
 {
 	uint ea = EA_AY_DI_16();
 	uint src = MASK_OUT_ABOVE_16(DX);
@@ -6180,7 +6222,7 @@ void m68k_op_sub_32_re_al(void)
 }
 
 
-void m68k_op_suba_16_d(void)
+void M68K_OP_HOT_ATTR m68k_op_suba_16_d(void)
 {
 	uint* r_dst = &AX;
 
@@ -6286,7 +6328,7 @@ void m68k_op_suba_16_i(void)
 }
 
 
-void m68k_op_suba_32_d(void)
+void M68K_OP_HOT_ATTR m68k_op_suba_32_d(void)
 {
 	uint* r_dst = &AX;
 
@@ -6294,7 +6336,7 @@ void m68k_op_suba_32_d(void)
 }
 
 
-void m68k_op_suba_32_a(void)
+void M68K_OP_HOT_ATTR m68k_op_suba_32_a(void)
 {
 	uint* r_dst = &AX;
 
@@ -6302,7 +6344,7 @@ void m68k_op_suba_32_a(void)
 }
 
 
-void m68k_op_suba_32_ai(void)
+void M68K_OP_HOT_ATTR m68k_op_suba_32_ai(void)
 {
 	uint src = OPER_AY_AI_32();
 	uint* r_dst = &AX;
@@ -6968,7 +7010,7 @@ void m68k_op_subq_8_al(void)
 }
 
 
-void m68k_op_subq_16_d(void)
+void M68K_OP_HOT_ATTR m68k_op_subq_16_d(void)
 {
 	uint* r_dst = &DY;
 	uint src = (((REG_IR >> 9) - 1) & 7) + 1;
@@ -6984,7 +7026,7 @@ void m68k_op_subq_16_d(void)
 }
 
 
-void m68k_op_subq_16_a(void)
+void M68K_OP_HOT_ATTR m68k_op_subq_16_a(void)
 {
 	uint* r_dst = &AY;
 
@@ -7104,7 +7146,7 @@ void m68k_op_subq_16_al(void)
 }
 
 
-void m68k_op_subq_32_d(void)
+void M68K_OP_HOT_ATTR m68k_op_subq_32_d(void)
 {
 	uint* r_dst = &DY;
 	uint src = (((REG_IR >> 9) - 1) & 7) + 1;
@@ -7120,7 +7162,7 @@ void m68k_op_subq_32_d(void)
 }
 
 
-void m68k_op_subq_32_a(void)
+void M68K_OP_HOT_ATTR m68k_op_subq_32_a(void)
 {
 	uint* r_dst = &AY;
 
@@ -7402,7 +7444,7 @@ void m68k_op_subx_32_mm(void)
 }
 
 
-void m68k_op_swap_32(void)
+void M68K_OP_HOT_ATTR m68k_op_swap_32(void)
 {
 	uint* r_dst = &DY;
 
@@ -8243,7 +8285,7 @@ void m68k_op_trapv(void)
 }
 
 
-void m68k_op_tst_8_d(void)
+void M68K_OP_HOT_ATTR m68k_op_tst_8_d(void)
 {
 	uint res = MASK_OUT_ABOVE_8(DY);
 
@@ -8254,7 +8296,7 @@ void m68k_op_tst_8_d(void)
 }
 
 
-void m68k_op_tst_8_ai(void)
+void M68K_OP_HOT_ATTR m68k_op_tst_8_ai(void)
 {
 	uint res = OPER_AY_AI_8();
 
@@ -8276,7 +8318,7 @@ void m68k_op_tst_8_pi(void)
 }
 
 
-void m68k_op_tst_8_pi7(void)
+void M68K_OP_HOT_ATTR m68k_op_tst_8_pi7(void)
 {
 	uint res = OPER_A7_PI_8();
 
@@ -8309,7 +8351,7 @@ void m68k_op_tst_8_pd7(void)
 }
 
 
-void m68k_op_tst_8_di(void)
+void M68K_OP_HOT_ATTR m68k_op_tst_8_di(void)
 {
 	uint res = OPER_AY_DI_8();
 
@@ -8331,7 +8373,7 @@ void m68k_op_tst_8_ix(void)
 }
 
 
-void m68k_op_tst_8_aw(void)
+void M68K_OP_HOT_ATTR m68k_op_tst_8_aw(void)
 {
 	uint res = OPER_AW_8();
 
@@ -8401,7 +8443,7 @@ void m68k_op_tst_8_i(void)
 }
 
 
-void m68k_op_tst_16_d(void)
+void M68K_OP_HOT_ATTR m68k_op_tst_16_d(void)
 {
 	uint res = MASK_OUT_ABOVE_16(DY);
 
@@ -8428,7 +8470,7 @@ void m68k_op_tst_16_a(void)
 }
 
 
-void m68k_op_tst_16_ai(void)
+void M68K_OP_HOT_ATTR m68k_op_tst_16_ai(void)
 {
 	uint res = OPER_AY_AI_16();
 
@@ -8461,7 +8503,7 @@ void m68k_op_tst_16_pd(void)
 }
 
 
-void m68k_op_tst_16_di(void)
+void M68K_OP_HOT_ATTR m68k_op_tst_16_di(void)
 {
 	uint res = OPER_AY_DI_16();
 
@@ -8553,7 +8595,7 @@ void m68k_op_tst_16_i(void)
 }
 
 
-void m68k_op_tst_32_d(void)
+void M68K_OP_HOT_ATTR m68k_op_tst_32_d(void)
 {
 	uint res = DY;
 
@@ -8580,7 +8622,7 @@ void m68k_op_tst_32_a(void)
 }
 
 
-void m68k_op_tst_32_ai(void)
+void M68K_OP_HOT_ATTR m68k_op_tst_32_ai(void)
 {
 	uint res = OPER_AY_AI_32();
 
@@ -8613,7 +8655,7 @@ void m68k_op_tst_32_pd(void)
 }
 
 
-void m68k_op_tst_32_di(void)
+void M68K_OP_HOT_ATTR m68k_op_tst_32_di(void)
 {
 	uint res = OPER_AY_DI_32();
 
@@ -8711,7 +8753,7 @@ void m68k_op_unlk_32_a7(void)
 }
 
 
-void m68k_op_unlk_32(void)
+void M68K_OP_HOT_ATTR m68k_op_unlk_32(void)
 {
 	uint* r_dst = &AY;
 
@@ -8813,5 +8855,3 @@ void m68k_op_unpk_16_mm(void)
 /* ======================================================================== */
 /* ============================== END OF FILE ============================= */
 /* ======================================================================== */
-
-

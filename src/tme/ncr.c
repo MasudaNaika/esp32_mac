@@ -8,22 +8,30 @@
  */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "esp_heap_caps.h"
 #include "ncr.h"
 #include "m68k.h"
+#include "tmeconfig.h"
+#include "app_settings.h"
 
-static const char* const regNamesR[]={
+static const char* const regNamesR[] __attribute__((unused)) = {
 	"CURSCSIDATA","INITIATORCMD", "MODE", "TARGETCMD", "CURSCSISTATUS",
 	"BUSANDSTATUS", "INPUTDATA", "RESETPARINT"
 };
 
-static const char* const regNamesW[]={
+static const char* const regNamesW[] __attribute__((unused)) = {
 	"OUTDATA","INITIATORCMD", "MODE", "TARGETCMD", "SELECTENA",
 	"STARTDMASEND", "STARTDMATARRECV", "STARTDMAINITRECV"
 };
 
 
+// Full NCR5380-style SCSI controller state.
+// This struct tracks bus phase, selected target, command/data buffers, and the
+// DMA-style byte shuffling that the Mac ROM expects.
 typedef struct {
-	SCSIDevice *dev[8];
+	SCSIDevice *dev[SCSI_BUS_ID_COUNT];
 	uint8_t mode;
 	uint8_t tcr;
 	uint8_t dout;
@@ -87,28 +95,63 @@ typedef struct {
 #define ST_SELDONE 4
 #define ST_DATA 5
 
-static const char* const stateNames[]={
+static const char* const stateNames[] __attribute__((unused)) = {
 	"IDLE", "ARB", "ARBDONE", "SELECT", "SELDONE", "DATA"
 };
 
 static Ncr ncr;
 
+// Reset controller state while keeping allocated transfer storage and devices.
+void ncrInit() {
+	SCSIDevice *devices[SCSI_BUS_ID_COUNT];
+	memcpy(devices, ncr.dev, sizeof(devices));
+	uint8_t *dataBuffer = ncr.data.data;
+	if (!dataBuffer) {
+		dataBuffer = (uint8_t *)tme_psram_aligned_alloc(SCSI_DATA_BUFFER_SIZE,
+		                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+		if (!dataBuffer) {
+			printf("SCSI: failed to allocate %d byte data buffer\n", SCSI_DATA_BUFFER_SIZE);
+			abort();
+		}
+		printf("SCSI: data buffer allocated in PSRAM at %p (%d bytes)\n",
+		       dataBuffer,
+		       SCSI_DATA_BUFFER_SIZE);
+	}
+	memset(&ncr, 0, sizeof(ncr));
+	memcpy(ncr.dev, devices, sizeof(devices));
+	ncr.data.data = dataBuffer;
+	ncr.buf = ncr.data.cmd;
+	ncr.bufmax = sizeof(ncr.data.cmd);
+}
+
+static void ncrLogUnhandledWrite(unsigned int pc, unsigned int addr, unsigned int dack, unsigned int val) __attribute__((unused));
+static void ncrLogUnhandledWrite(unsigned int pc, unsigned int addr, unsigned int dack, unsigned int val) {
+	if (!appConsoleOutEnabled()) {
+		return;
+	}
+	printf("NCR: unimplemented write %s addr=%u val=%02x dack=%u pc=%08x state=%s mode=%02x tcr=%02x\n",
+			regNamesW[addr], addr, val, dack, pc, stateNames[ncr.state], ncr.mode, ncr.tcr);
+}
+
+// Decode the command bytes currently buffered by the NCR model.
+// Steps:
+// 1. detect 6-byte vs 10-byte SCSI commands,
+// 2. extract LBA and transfer length,
+// 3. forward the request to the selected device backend.
 static void parseScsiCmd(int isRead) {
 	uint8_t *buf=ncr.data.cmd;
 	int cmd=buf[0];
-	int lba, len, ctrl;
+	int lba, len;
 	int group=(cmd>>5);
 	if (group==0) { //6-byte command
 		lba=buf[3]|(buf[2]<<8)|((buf[1]&0x1F)<<16);
 		len=buf[4];
 		if (len==0) len=256;
-		ctrl=buf[5];
 //		for (int x=0; x<6; x++) printf("%02X ", buf[x]);
 //		printf("\n");
 	} else if (group==1 || group==2) { //10-byte command
 		lba=buf[5]|(buf[4]<<8)|(buf[3]<<16)|(buf[2]<<24);
 		len=buf[8]|(buf[7]<<8);
-		ctrl=buf[9];
 //		for (int x=0; x<10; x++) printf("%02X ", buf[x]);
 //		printf("\n");
 	} else {
@@ -121,8 +164,10 @@ static void parseScsiCmd(int isRead) {
 	}
 }
 
+// Read one NCR register byte as seen by the Mac ROM.
+// This path also advances DMA-style input buffering when the ROM is in a data-in phase.
 unsigned int ncrRead(unsigned int addr, unsigned int dack) {
-	unsigned int pc=m68k_get_reg(NULL, M68K_REG_PC);
+	unsigned int pc __attribute__((unused))=m68k_get_reg(NULL, M68K_REG_PC);
 	unsigned int ret=0;
 	if (ncr.mode&MODE_DMA && dack) {
 		if (ncr.tcr&TCR_IO) {
@@ -175,8 +220,6 @@ unsigned int ncrRead(unsigned int addr, unsigned int dack) {
 	} else if (addr==6) {
 		ret=ncr.din;
 //		printf("READ BYTE (NCR addr6) %02X dack=%d\n", ret, dack);
-	} else if (addr==7) {
-		printf("Scsi: !UNIMPLEMENTED! (addr 7)\n");
 	}
 //	printf("%08X SCSI: (dack %d), cur st %s read %s (reg %d) = %x \n", 
 //		pc, dack,  stateNames[ncr.state], regNamesR[addr], addr, ret);
@@ -184,8 +227,13 @@ unsigned int ncrRead(unsigned int addr, unsigned int dack) {
 }
 
 
+// Write one NCR register byte as seen by the Mac ROM.
+// Steps:
+// 1. update bus/control register state,
+// 2. move command or data bytes through the shared buffer,
+// 3. transition between arbitration, selection, and data phases.
 void ncrWrite(unsigned int addr, unsigned int dack, unsigned int val) {
-	unsigned int pc=m68k_get_reg(NULL, M68K_REG_PC);
+	unsigned int pc __attribute__((unused))=m68k_get_reg(NULL, M68K_REG_PC);
 
 	if (addr==0) {
 		if (ncr.mode&MODE_DMA && dack) {
@@ -259,7 +307,7 @@ void ncrWrite(unsigned int addr, unsigned int dack, unsigned int val) {
 			if (type==0) {
 //				printf("Sel data buf %s.\n", (newtcr&TCR_IO)?"IN":"OUT");
 				ncr.buf=ncr.data.data;
-				ncr.bufmax=sizeof(ncr.data.data);
+				ncr.bufmax=SCSI_DATA_BUFFER_SIZE;
 			} else if (type==TCR_CD) {
 //				printf("Sel cmd/status buf %s.\n", (newtcr&TCR_IO)?"IN":"OUT");
 				ncr.buf=ncr.data.cmd;
@@ -275,17 +323,23 @@ void ncrWrite(unsigned int addr, unsigned int dack, unsigned int val) {
 		}
 		ncr.tcr=val&0xf;
 	} else if (addr==4) {
-		if (val!=0) printf("!UNIMPLEMENTED! selenable (val %x), todo\n", val);
+		if (val!=0) ncrLogUnhandledWrite(pc, addr, dack, val);
 	} else if (addr==5) {
-		printf("!UNIMPLEMENTED!\n");
+		if (val!=0) ncrLogUnhandledWrite(pc, addr, dack, val);
 	} else if (addr==6) {
-		printf("!UNIMPLEMENTED!\n");
+		if (val!=0) ncrLogUnhandledWrite(pc, addr, dack, val);
 	} else if (addr==7) {
 		//Start DMA. We already do this using the mode bit.
 	}
 //	printf("%08X SCSI: (dack %d), cur state %s %02x to %s (reg %d)\n", pc, dack, stateNames[ncr.state], val, regNamesW[addr], addr);
 }
 
+// Attach one emulated SCSI target device at the requested target ID.
 void ncrRegisterDevice(int id, SCSIDevice* dev){
+	if (id < 0 || id >= SCSI_TARGET_COUNT) {
+		printf("SCSI: refusing target ID %d (initiator uses ID %d)\n",
+		       id, SCSI_INITIATOR_ID);
+		return;
+	}
 	ncr.dev[id]=dev;
 }

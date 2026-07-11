@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP32 Mac Console</title>
+<style>
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:#101214;color:#d7d7d7;font:15px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;display:grid;grid-template-rows:auto minmax(0,1fr)}
+header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #34383d}
+main{width:min(1100px,100%);height:100%;min-height:0;margin:0 auto;padding:12px 16px;display:grid;grid-template-rows:minmax(0,1fr) auto;gap:10px}
+a{color:#85b7ff;text-decoration:none}
+form{display:flex;gap:8px;margin:8px 0 0}
+input,button{font:inherit;border:1px solid #4b5158;background:#181b1f;color:#f0f0f0;padding:10px}
+input{flex:1;min-width:0}
+button{cursor:pointer;background:#243247}
+button.active{background:#1f4a34;border-color:#39875a}
+pre{height:100%;min-height:0;white-space:pre-wrap;overflow:auto;border:1px solid #34383d;background:#050607;padding:14px;margin:0}
+.consolePane{min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr);gap:8px}
+.commandPane{border-top:1px solid #34383d;padding-top:8px}
+.quick{display:flex;flex-wrap:wrap;gap:8px;margin:0}
+.quick button{padding:8px 10px}
+#streamStatus{color:#aab3bd}
+</style>
+</head>
+<body>
+<header>
+  <strong>ESP32 Mac Console</strong>
+  <nav><a href="/">home</a> | <a href="/files">files</a> | <a href="/setting">setting</a></nav>
+</header>
+<main>
+  <div class="consolePane">
+    <div id="streamStatus">log stream: connecting</div>
+    <pre id="log"></pre>
+  </div>
+  <div class="commandPane">
+    <div class="quick">
+      <button data-cmd="status">status</button>
+      <button data-cmd="console">console</button>
+      <button data-cmd="emu">emu</button>
+      <button data-toggle="log">log --</button>
+      <button data-toggle="perf">perf --</button>
+      <button data-toggle="cpu">cpu --</button>
+      <button data-toggle="turbo">turbo --</button>
+      <button data-cmd="reboot">reboot</button>
+      <button data-cmd="help">help</button>
+    </div>
+    <form id="commandForm">
+      <input id="command" autocomplete="off" autofocus placeholder="status">
+      <button type="submit">Run</button>
+    </form>
+  </div>
+</main>
+<script>
+const form = document.getElementById('commandForm');
+const input = document.getElementById('command');
+const log = document.getElementById('log');
+const streamStatus = document.getElementById('streamStatus');
+const maxLogChars = 40000;
+const toggleState = { log: null, perf: null, cpu: null, turbo: null };
+
+function updateToggleButtons() {
+  document.querySelectorAll('[data-toggle]').forEach(button => {
+    const name = button.dataset.toggle;
+    const enabled = toggleState[name];
+    button.textContent = enabled === null ? `${name} --` : `${name} ${enabled ? 'on' : 'off'}`;
+    button.classList.toggle('active', enabled === true);
+  });
+}
+
+function updateStatusState(text) {
+  const match = text.match(/STATUS: .*?\blog=(on|off)\b.*?\bperf=(on|off)\b.*?\bcpu=(on|off)\b.*?\bturbo=(on|off)\b/);
+  if (!match) return;
+  toggleState.log = match[1] === 'on';
+  toggleState.perf = match[2] === 'on';
+  toggleState.cpu = match[3] === 'on';
+  toggleState.turbo = match[4] === 'on';
+  updateToggleButtons();
+}
+
+function appendLog(text) {
+  log.textContent += text;
+  if (log.textContent.length > maxLogChars) {
+    log.textContent = log.textContent.slice(-maxLogChars);
+    const firstNewline = log.textContent.indexOf('\n');
+    if (firstNewline >= 0) log.textContent = log.textContent.slice(firstNewline + 1);
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+async function runCommand(command) {
+  const cmd = command.trim();
+  if (!cmd) return;
+  if (cmd.toLowerCase() === 'cls') {
+    log.textContent = '';
+  }
+  appendLog(`> ${cmd}\n`);
+  try {
+    const res = await fetch('/api/console', { method: 'POST', body: cmd });
+    const text = await res.text();
+    appendLog(`${text}\n`);
+    updateStatusState(text);
+    if (/^(log|perf|cpu|turbo) (on|off)$/i.test(cmd)) {
+      await refreshStatus();
+    }
+  } catch (error) {
+    appendLog(`ERROR: ${error.message}\n\n`);
+  }
+}
+
+async function refreshStatus() {
+  try {
+    const res = await fetch('/api/console', { method: 'POST', body: 'status' });
+    updateStatusState(await res.text());
+  } catch (error) {
+    streamStatus.textContent = `status refresh failed: ${error.message}`;
+  }
+}
+
+form.addEventListener('submit', event => {
+  event.preventDefault();
+  runCommand(input.value);
+  input.value = '';
+});
+
+document.querySelectorAll('[data-cmd]').forEach(button => {
+  button.addEventListener('click', () => runCommand(button.dataset.cmd));
+});
+document.querySelectorAll('[data-toggle]').forEach(button => {
+  button.addEventListener('click', () => {
+    const name = button.dataset.toggle;
+    const next = toggleState[name] === true ? 'off' : 'on';
+    runCommand(`${name} ${next}`);
+  });
+});
+
+function startLogStream() {
+  const events = new EventSource('/api/console/events');
+  events.onopen = () => {
+    streamStatus.textContent = 'log stream: connected';
+  };
+  events.onmessage = event => {
+    appendLog(event.data);
+  };
+  events.onerror = () => {
+    streamStatus.textContent = 'log stream: reconnecting';
+  };
+}
+
+startLogStream();
+updateToggleButtons();
+runCommand('status');
+</script>
+</body>
+</html>

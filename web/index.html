@@ -7,7 +7,9 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;overflow:hidden}
-body{background:#111;color:#ccc;font-family:monospace;display:flex;flex-direction:column;align-items:center}
+body{background:#111;color:#ccc;font:15px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;display:flex;flex-direction:column;align-items:center}
+header{width:100%;display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #333}
+a{color:#85b7ff;text-decoration:none}
 #status{padding:6px;font-size:12px;text-align:center}
 .ok{color:#0f0}.err{color:#f44}
 
@@ -69,6 +71,10 @@ body{background:#111;color:#ccc;font-family:monospace;display:flex;flex-directio
 </style>
 </head>
 <body>
+<header>
+ <strong>ESP32 Mac Home</strong>
+ <nav><a href="/files">files</a> | <a href="/setting">setting</a> | <a href="/console">console</a></nav>
+</header>
 <div id="status" class="err">Not connected</div>
 <div id="trackpad">
  <button id="connectbtn" onclick="bleConnect()">Connect</button>
@@ -194,6 +200,14 @@ function sendMouse(dx,dy,btn){
 
 function sendKey(sc,up){sendBuf([up?85:75,sc]);}
 
+function releaseMouseButton(){
+ if(btnState){
+  btnState=0;
+  sendMouse(0,0,0);
+ }
+ clickbtn.classList.remove('down');
+}
+
 window.bleConnect=async function(){
  try{
   setStatus('Scanning...',false);
@@ -312,6 +326,7 @@ trackpad.addEventListener('click',function(){
 });
 document.addEventListener('pointerlockchange',function(){
  locked=!!document.pointerLockElement;
+ if(!locked){releaseMouseButton();}
  infoEl.textContent=locked?'Mouse captured (Esc to release)':'On desktop: click trackpad to capture mouse';
 });
 
@@ -330,6 +345,12 @@ trackpad.addEventListener('mousedown',function(e){
 });
 trackpad.addEventListener('mouseup',function(e){
  if(locked){btnState=0;sendMouse(0,0,0);}
+});
+document.addEventListener('mouseup',function(e){
+ if(btnState&&!clickLocked){releaseMouseButton();}
+});
+window.addEventListener('blur',function(){
+ if(!clickLocked){releaseMouseButton();}
 });
 
 // --- Keyboard ---
@@ -359,8 +380,11 @@ for(var i=0;i<keys.length;i++){(function(k){
  var sc=parseInt(k.getAttribute('data-sc'),16);
  var isMod=k.classList.contains('mod');
 
- k.addEventListener('touchstart',function(e){
+ function pressKey(e){
   e.preventDefault();
+  if(e.pointerId!==undefined&&k.setPointerCapture){
+   try{k.setPointerCapture(e.pointerId);}catch(_){}
+  }
   if(isMod){
    if(modState[sc]){
     modState[sc]=false;
@@ -380,24 +404,37 @@ for(var i=0;i<keys.length;i++){(function(k){
    k.classList.add('pressed');
    sendKey(sc,false);
   }
- },{passive:false});
+ }
 
- k.addEventListener('touchend',function(e){
+ function releaseKey(e){
   e.preventDefault();
   if(!isMod){
    k.classList.remove('pressed');
    sendKey(sc,true);
    releaseModifiers();
   }
- },{passive:false});
+ }
 
- k.addEventListener('touchcancel',function(e){
+ function cancelKey(){
   if(!isMod){
    k.classList.remove('pressed');
    sendKey(sc,true);
    releaseModifiers();
   }
- });
+ }
+
+ if(window.PointerEvent){
+  k.addEventListener('pointerdown',pressKey);
+  k.addEventListener('pointerup',releaseKey);
+  k.addEventListener('pointercancel',cancelKey);
+  k.addEventListener('pointerleave',function(e){
+   if(e.buttons===0) cancelKey();
+  });
+ }else{
+  k.addEventListener('touchstart',pressKey,{passive:false});
+  k.addEventListener('touchend',releaseKey,{passive:false});
+  k.addEventListener('touchcancel',cancelKey);
+ }
 })(keys[i]);}
 
 function releaseModifiers(){

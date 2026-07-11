@@ -300,6 +300,14 @@ int m68k_cycles_remaining(void);        /* Number of cycles left */
 void m68k_modify_timeslice(int cycles); /* Modify cycles left */
 void m68k_end_timeslice(void);          /* End timeslice now */
 
+#if defined(ESP32_MAC_OPCODE_PROFILER) && ESP32_MAC_OPCODE_PROFILER
+/* Temporary opcode profiler for selecting hot handlers to place in IRAM. */
+int m68k_opcode_profiler_enabled(void);
+int m68k_opcode_profiler_set_enabled(int enabled);
+void m68k_opcode_profiler_reset(void);
+void m68k_opcode_profiler_dump(unsigned int limit);
+#endif
+
 /* Set the IPL0-IPL2 pins on the CPU (IRQ).
  * A transition from < 7 to 7 will cause a non-maskable interrupt (NMI).
  * Setting IRQ to 0 will clear an interrupt request.

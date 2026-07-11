@@ -2,24 +2,17 @@
 
 uint8_t I2C_Read_EXIO(uint8_t REG)
 {
-  Wire.beginTransmission(TCA9554_ADDRESS);
-  Wire.write(REG);
-  uint8_t result = Wire.endTransmission();
-  if (result != 0) {
+  uint8_t bitsStatus = 0;
+  if (!I2C_Read(TCA9554_ADDRESS, REG, &bitsStatus, 1)) {
     printf("TCA9554 read failed\r\n");
+    return 0;
   }
-  Wire.requestFrom(TCA9554_ADDRESS, 1);
-  uint8_t bitsStatus = Wire.read();
   return bitsStatus;
 }
 
 uint8_t I2C_Write_EXIO(uint8_t REG, uint8_t Data)
 {
-  Wire.beginTransmission(TCA9554_ADDRESS);
-  Wire.write(REG);
-  Wire.write(Data);
-  uint8_t result = Wire.endTransmission();
-  if (result != 0) {
+  if (!I2C_Write(TCA9554_ADDRESS, REG, &Data, 1)) {
     printf("TCA9554 write failed\r\n");
     return -1;
   }

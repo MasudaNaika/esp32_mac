@@ -40,6 +40,23 @@
 
 #include "m68kops.h"
 #include "m68kcpu.h"
+#include "esp_attr.h"
+
+#ifndef ESP32_MAC_OPCODE_PROFILER
+#define ESP32_MAC_OPCODE_PROFILER 0
+#endif
+
+#if ESP32_MAC_OPCODE_PROFILER
+#include "esp_heap_caps.h"
+#include "tmeconfig.h"
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#endif
+
+#define M68K_HOT_ATTR IRAM_ATTR
 
 /* ======================================================================== */
 /* ================================= DATA ================================= */
@@ -75,6 +92,131 @@ jmp_buf m68ki_aerr_trap;
 uint    m68ki_aerr_address;
 uint    m68ki_aerr_write_mode;
 uint    m68ki_aerr_fc;
+
+#if ESP32_MAC_OPCODE_PROFILER
+typedef struct {
+	m68ki_instruction_jump_call handler;
+	uint64_t count;
+	uint32_t sample_opcode;
+} m68ki_opcode_profile_entry;
+
+static uint32_t *m68ki_opcode_profile_counts = NULL;
+static bool m68ki_opcode_profile_enabled = false;
+
+static inline void m68ki_profile_opcode(uint opcode)
+{
+	if(m68ki_opcode_profile_enabled && m68ki_opcode_profile_counts != NULL)
+		m68ki_opcode_profile_counts[opcode]++;
+}
+
+int m68k_opcode_profiler_enabled(void)
+{
+	return m68ki_opcode_profile_enabled ? 1 : 0;
+}
+
+int m68k_opcode_profiler_set_enabled(int enabled)
+{
+	if(enabled && m68ki_opcode_profile_counts == NULL)
+	{
+		m68ki_opcode_profile_counts = tme_psram_aligned_calloc(
+			0x10000, sizeof(*m68ki_opcode_profile_counts),
+			MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+		if(m68ki_opcode_profile_counts == NULL)
+		{
+			puts("OPPROF: failed to allocate opcode counters");
+			m68ki_opcode_profile_enabled = false;
+			return 0;
+		}
+	}
+	m68ki_opcode_profile_enabled = enabled != 0;
+	printf("OPPROF: %s\n", enabled ? "on" : "off");
+	return 1;
+}
+
+void m68k_opcode_profiler_reset(void)
+{
+	if(m68ki_opcode_profile_counts != NULL)
+		memset(m68ki_opcode_profile_counts, 0,
+		       0x10000 * sizeof(*m68ki_opcode_profile_counts));
+	puts("OPPROF: reset");
+}
+
+static int m68ki_compare_profile_entries(const void *a, const void *b)
+{
+	const m68ki_opcode_profile_entry *lhs = (const m68ki_opcode_profile_entry *)a;
+	const m68ki_opcode_profile_entry *rhs = (const m68ki_opcode_profile_entry *)b;
+	if(lhs->count < rhs->count)
+		return 1;
+	if(lhs->count > rhs->count)
+		return -1;
+	return 0;
+}
+
+void m68k_opcode_profiler_dump(unsigned int limit)
+{
+	if(m68ki_opcode_profile_counts == NULL)
+	{
+		puts("OPPROF: counters are not allocated; run 'opprof on' first");
+		return;
+	}
+	if(limit == 0)
+		limit = 64;
+
+	m68ki_opcode_profile_entry *entries = tme_psram_aligned_calloc(
+		2048, sizeof(*entries), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+	if(entries == NULL)
+	{
+		puts("OPPROF: failed to allocate dump buffer");
+		return;
+	}
+
+	uint64_t total = 0;
+	unsigned int used = 0;
+	for(uint opcode = 0; opcode < 0x10000; ++opcode)
+	{
+		const uint32_t count = m68ki_opcode_profile_counts[opcode];
+		if(count == 0)
+			continue;
+		m68ki_instruction_jump_call handler = m68ki_dispatch_table[opcode].handler;
+		total += count;
+		unsigned int i;
+		for(i = 0; i < used; ++i)
+		{
+			if(entries[i].handler == handler)
+			{
+				entries[i].count += count;
+				break;
+			}
+		}
+		if(i == used && used < 2048)
+		{
+			entries[used].handler = handler;
+			entries[used].count = count;
+			entries[used].sample_opcode = opcode;
+			++used;
+		}
+	}
+
+	qsort(entries, used, sizeof(*entries), m68ki_compare_profile_entries);
+	printf("OPPROF: total=%llu unique_handlers=%u enabled=%d\n",
+	       (unsigned long long)total, used, m68ki_opcode_profile_enabled ? 1 : 0);
+	if(limit > used)
+		limit = used;
+	for(unsigned int i = 0; i < limit; ++i)
+	{
+		unsigned int permille = total > 0 ? (unsigned int)((entries[i].count * 1000ULL) / total) : 0;
+		printf("OPPROF:%03u count=%llu pct=%u.%u handler=%p sample_opcode=%04lx\n",
+		       i + 1,
+		       (unsigned long long)entries[i].count,
+		       permille / 10,
+		       permille % 10,
+		       (void *)(uintptr_t)entries[i].handler,
+		       (unsigned long)entries[i].sample_opcode);
+	}
+
+	free(entries);
+}
+#endif
 
 /* Used by shift & rotate instructions */
 const uint8 m68ki_shift_8_table[65] =
@@ -116,7 +258,7 @@ const uint m68ki_shift_32_table[65] =
 /* Number of clock cycles to use for exception processing.
  * I used 4 for any vectors that are undocumented for processing times.
  */
-uint8 m68ki_exception_cycle_table[3][256] =
+const uint8 m68ki_exception_cycle_table[3][256] =
 {
 	{ /* 000 */
 		  4, /*  0: Reset - Initial Stack Pointer                      */
@@ -562,7 +704,6 @@ void m68k_set_instr_hook_callback(void  (*callback)(void))
 	CALLBACK_INSTR_HOOK = callback ? callback : default_instr_hook_callback;
 }
 
-#include <stdio.h>
 /* Set the CPU type. */
 void m68k_set_cpu_type(unsigned int cpu_type)
 {
@@ -572,7 +713,7 @@ void m68k_set_cpu_type(unsigned int cpu_type)
 			CPU_TYPE         = CPU_TYPE_000;
 			CPU_ADDRESS_MASK = 0x00ffffff;
 			CPU_SR_MASK      = 0xa71f; /* T1 -- S  -- -- I2 I1 I0 -- -- -- X  N  Z  V  C  */
-			CYC_INSTRUCTION  = m68ki_cycles[0];
+			CYC_INSTRUCTION  = NULL;
 			CYC_EXCEPTION    = m68ki_exception_cycle_table[0];
 			CYC_BCC_NOTAKE_B = -2;
 			CYC_BCC_NOTAKE_W = 2;
@@ -588,7 +729,7 @@ void m68k_set_cpu_type(unsigned int cpu_type)
 			CPU_TYPE         = CPU_TYPE_010;
 			CPU_ADDRESS_MASK = 0x00ffffff;
 			CPU_SR_MASK      = 0xa71f; /* T1 -- S  -- -- I2 I1 I0 -- -- -- X  N  Z  V  C  */
-			CYC_INSTRUCTION  = m68ki_cycles[1];
+			CYC_INSTRUCTION  = NULL;
 			CYC_EXCEPTION    = m68ki_exception_cycle_table[1];
 			CYC_BCC_NOTAKE_B = -4;
 			CYC_BCC_NOTAKE_W = 0;
@@ -604,7 +745,7 @@ void m68k_set_cpu_type(unsigned int cpu_type)
 			CPU_TYPE         = CPU_TYPE_EC020;
 			CPU_ADDRESS_MASK = 0x00ffffff;
 			CPU_SR_MASK      = 0xf71f; /* T1 T0 S  M  -- I2 I1 I0 -- -- -- X  N  Z  V  C  */
-			CYC_INSTRUCTION  = m68ki_cycles[2];
+			CYC_INSTRUCTION  = NULL;
 			CYC_EXCEPTION    = m68ki_exception_cycle_table[2];
 			CYC_BCC_NOTAKE_B = -2;
 			CYC_BCC_NOTAKE_W = 0;
@@ -620,7 +761,7 @@ void m68k_set_cpu_type(unsigned int cpu_type)
 			CPU_TYPE         = CPU_TYPE_020;
 			CPU_ADDRESS_MASK = 0xffffffff;
 			CPU_SR_MASK      = 0xf71f; /* T1 T0 S  M  -- I2 I1 I0 -- -- -- X  N  Z  V  C  */
-			CYC_INSTRUCTION  = m68ki_cycles[2];
+			CYC_INSTRUCTION  = NULL;
 			CYC_EXCEPTION    = m68ki_exception_cycle_table[2];
 			CYC_BCC_NOTAKE_B = -2;
 			CYC_BCC_NOTAKE_W = 0;
@@ -637,7 +778,7 @@ void m68k_set_cpu_type(unsigned int cpu_type)
 
 /* Execute some instructions until we use up num_cycles clock cycles */
 /* ASG: removed per-instruction interrupt checks */
-int m68k_execute(int num_cycles)
+int M68K_HOT_ATTR m68k_execute(int num_cycles)
 {
 	/* Make sure we're not stopped */
 	if(!CPU_STOPPED)
@@ -670,8 +811,13 @@ int m68k_execute(int num_cycles)
 
 			/* Read an instruction and call its handler */
 			REG_IR = m68ki_read_imm_16();
-			m68ki_instruction_jump_table[REG_IR]();
-			USE_CYCLES(CYC_INSTRUCTION[REG_IR]);
+#if ESP32_MAC_OPCODE_PROFILER
+			m68ki_profile_opcode(REG_IR);
+#endif
+			const m68ki_dispatch_entry *dispatch = &m68ki_dispatch_table[REG_IR];
+			const uint cycles = dispatch->cycles;
+			dispatch->handler();
+			USE_CYCLES(cycles);
 
 			/* Trace m68k_exception, if necessary */
 			m68ki_exception_if_trace(); /* auto-disable (see m68kcpu.h) */
@@ -696,7 +842,7 @@ int m68k_execute(int num_cycles)
 }
 
 
-int m68k_cycles_run(void)
+int M68K_HOT_ATTR m68k_cycles_run(void)
 {
 	return m68ki_initial_cycles - GET_CYCLES();
 }

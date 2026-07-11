@@ -71,7 +71,7 @@
 
 #define M68K_EMULATE_TRACE          OPT_OFF
 
-#define M68K_EMULATE_RESET          OPT_OFF
+#define M68K_EMULATE_RESET          OPT_ON
 #define M68K_RESET_CALLBACK()       your_reset_handler_function()
 
 #define M68K_EMULATE_FC             OPT_OFF

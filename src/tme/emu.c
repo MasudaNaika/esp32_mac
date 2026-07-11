@@ -21,56 +21,106 @@
 #include "rtc.h"
 #include "ncr.h"
 #include "hd.h"
+#include "emu_monitor.h"
+#include "mmu.h"
 #include "snd.h"
 #include "mouse.h"
+#include "vmu.h"
 #include <stdbool.h>
 #include <sys/time.h>
+#include "esp_attr.h"
+#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "app_settings.h"
+#include "pv_fdd.h"
+#include "hd.h"
 
-
-unsigned char *macRom;
-unsigned char *macRam;
-unsigned char *vidMem;
-
-#define MEMADDR_DUMMY_CACHE (void*)1
-
-int rom_remap, video_remap=0, audio_remap=0, audio_volume=0, audio_en=0;
-
-void m68k_instruction() {
-	unsigned int pc=m68k_get_reg(NULL, M68K_REG_PC);
-	printf("Mon: %x\n", pc);
-	int ok=0;
-	if (pc < 0x400000) {
-		if (rom_remap) {
-			ok=1;
-		}
-	} else if (pc >= 0x400000 && pc<0x500000) {
-		ok=1;
-	}
-	if (!ok) return;
-	pc&=0x1FFFF;
-	if (pc==0x7DCC) printf("Mon: SCSIReadSectors\n");
-	if (pc==0x7E4C) printf("Mon: SCSIReadSectors exit OK\n");
-	if (pc==0x7E56) printf("Mon: SCSIReadSectors exit FAIL\n");
+static void logEmuHeap(const char *tag) {
+	printf("EMU heap %s: DRAM free=%u largest=%u DMA free=%u largest=%u PSRAM free=%u largest=%u\n",
+	       tag,
+	       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+	       (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+	       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+	       (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+	       (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+	       (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 }
 
-typedef uint8_t (*PeripAccessCb)(unsigned int address, int data, int isWrite);
+/**
+https://retrocomputing.stackexchange.com/questions/13077
+
+Tommy wrote:
+
+I wrote an emulator earlier the year, so I can answer on the Macintosh.
+
+The processor's clock rate is 7,833,600 Hz; the video subsystem is completely synchronous 
+and completes each line in 352 processor cycles, outputting a total of 370 lines per frame.
+
+Therefore each frame is 130,240 cycles long.
+
+So the original Macintosh produces a touch less than 60.15 frames per second. So it's as much 
+60Hz as almost any other machine you care to mention, though nowhere near NTSC timings otherwise.
+
+(Additionally, for the curious: two pixels are output per processor clock, 512 are pixels, 
+and the equivalent of an additional 192 are spent on blanking and retrace. Of the 370 line period 
+that completes a frame, 342 contain pixels and the other 28 are blanking and retrace. 
+So the actual output resolution is 512x342).
+ */
+
+#define EMU_CPU_HZ		7833600
+#define EMU_VBI_CYCLES	130240
+#define EMU_VIA_ECLOCK_DIV 10
+#define EMU_VBL_RATE_HZ 60
+#define EMU_MAC_SCANLINE_CYCLES 352
+#define EMU_MAC_SCANLINES 370
+#define EMU_SOUND_FRAME_SAMPLES EMU_MAC_SCANLINES
+#define EMU_HOT_ATTR IRAM_ATTR
+
+_Static_assert(EMU_MAC_SCANLINE_CYCLES * EMU_MAC_SCANLINES == EMU_VBI_CYCLES,
+               "Mac scanline timing must cover one VBL exactly");
+
+uint8_t *macRom;
+uint8_t *macRam;
+uint8_t *macSnd[2];
+
+int rom_remap=0, video_remap=0, audio_remap=0;
+int audio_volume=0, audio_en=0;
+static bool emuViaIrqPending;
+static bool emuSccIrqPending;
+static bool emuCpuReady;
+static volatile bool emuStopRequested;
+static volatile bool emuStopped = true;
+static uint8_t emuSoundRawFrame[EMU_SOUND_FRAME_SAMPLES];
+static SndGateEvent emuSoundGateEvents[SND_GATE_MAX_EVENTS];
+static uint16_t emuSoundGateEventCount;
+static bool emuSoundFrameStartGateEnabled;
+static uint32_t emuSoundGateOverflowFrames;
+static uint32_t emuSoundGateOverflowFramesLogged;
+static uint16_t scanline_start;
+static uint16_t scanline_end;
+static int surpassCycles = 0;
+
+static void updateCpuIrq(void) {
+	if (emuCpuReady) {
+		m68k_set_irq(emuSccIrqPending ? 2 : emuViaIrqPending ? 1 : 0);
+	}
+}
+
+void m68k_instruction() {
+}
 
 uint8_t unhandledAccessCb(unsigned int address, int data, int isWrite) {
-	unsigned int pc=m68k_get_reg(NULL, M68K_REG_PC);
+    // Flag any memory access that escapes the configured map.
+    unsigned int pc=m68k_get_reg(NULL, M68K_REG_PC);
 	printf("Unhandled %s @ 0x%X! PC=0x%X\n", isWrite?"write":"read", address, pc);
 	return 0xff;
 }
 
-uint8_t bogusReadCb(unsigned int address, int data, int isWrite) {
-	if (isWrite) return 0;
-	return address^(address>>8)^(address>>16);
-}
-
 uint8_t ncrAccessCb(unsigned int address, int data, int isWrite) {
-	if (isWrite) {
+    // Forward NCR SCSI accesses into the disk controller model.
+    if (isWrite) {
 		ncrWrite((address>>4)&0x7, (address>>9)&1, data);
 		return 0;
 	} else {
@@ -79,7 +129,8 @@ uint8_t ncrAccessCb(unsigned int address, int data, int isWrite) {
 }
 
 uint8_t sscAccessCb(unsigned int address, int data, int isWrite) {
-	if (isWrite) {
+    // SCC is the serial-port model used by the ROM for communications.
+    if (isWrite) {
 		sccWrite(address, data);
 		return 0;
 	} else {
@@ -88,7 +139,8 @@ uint8_t sscAccessCb(unsigned int address, int data, int isWrite) {
 }
 
 uint8_t iwmAccessCb(unsigned int address, int data, int isWrite) {
-	if (isWrite) {
+    // The IWM shim handles floppy controller register access.
+    if (isWrite) {
 		iwmWrite((address>>9)&0xf, data);
 		return 0;
 	} else {
@@ -96,20 +148,26 @@ uint8_t iwmAccessCb(unsigned int address, int data, int isWrite) {
 	}
 }
 
-uint8_t sccIackCb(unsigned int address, int data, int isWrite) {
-	// SCC interrupt acknowledge - read returns vector from SCC
-	if (!isWrite) return sccRead(address);
+uint8_t phaseReadCb(unsigned int address, int data, int isWrite) {
+    // The Mac ROM samples this window during boot to check hardware timing
+    // phase. Emulation has no unstable phase state, so reads report in-phase.
+	(void)address; (void)data; (void)isWrite;
 	return 0;
 }
 
 uint8_t scsiDmaCb(unsigned int address, int data, int isWrite) {
-	// SCSI pseudo-DMA area - return 0 for now
+    // SCSI pseudo-DMA area - return 0 for now
 	(void)address; (void)data; (void)isWrite;
 	return 0;
 }
 
 uint8_t viaAccessCb(unsigned int address, int data, int isWrite) {
-	if (isWrite) {
+    // The VIA window is the entry point for timers, keyboard, and control lines.
+	// The VIA is connected to the 68000 upper byte lane at even addresses.
+	if (address & 1) {
+		return isWrite ? 0 : 0xFF;
+	}
+    if (isWrite) {
 		viaWrite((address>>9)&0xf, data);
 		return 0;
 	} else {
@@ -117,296 +175,299 @@ uint8_t viaAccessCb(unsigned int address, int data, int isWrite) {
 	}
 }
 
-
-#define FLAG_RO (1<<0);
-
-typedef struct {
-	uint8_t *memAddr;
-	union {
-		PeripAccessCb cb;
-		int flags;
-	};
-} MemmapEnt;
-
-#define MEMMAP_ES 0x20000 //entry size
-#define MEMMAP_MAX_ADDR 0x1000000
-MemmapEnt memmap[MEMMAP_MAX_ADDR/MEMMAP_ES];
-
-#define MMAP_RAM_PTR(ent, addr) &ent->memAddr[addr&(MEMMAP_ES-1)]
-
-static void regenMemmap(int remapRom) {
-	int i;
-	for (i=0; i<MEMMAP_MAX_ADDR/MEMMAP_ES; i++) {
-		memmap[i].memAddr=0;
-		memmap[i].cb=unhandledAccessCb;
-	}
-
-	if (remapRom) {
-		memmap[0].memAddr=macRom;
-		memmap[0].flags=FLAG_RO;
-		for (i=1; i<0x400000/MEMMAP_ES; i++) {
-			memmap[i].memAddr=NULL;
-			memmap[i].cb=bogusReadCb;
-		}
-	} else {
-		for (i=0; i<0x400000/MEMMAP_ES; i++) {
-			memmap[i].memAddr=&macRam[(i*MEMMAP_ES)&(TME_RAMSIZE-1)];
-			memmap[i].flags=0;
-		}
-	}
-
-	memmap[0x400000/MEMMAP_ES].memAddr=macRom;
-	memmap[0x400000/MEMMAP_ES].flags=FLAG_RO;
-	for (i=0x400000/MEMMAP_ES+1; i<0x500000/MEMMAP_ES; i++) {
-		memmap[i].memAddr=0;
-		memmap[i].cb=bogusReadCb;
-	}
-
-	// 0x500000-0x580000: Video memory (for large screen hack)
-	for (i=TME_VIDMEM_BASE/MEMMAP_ES; i<(TME_VIDMEM_BASE+TME_VIDMEM_SIZE)/MEMMAP_ES; i++) {
-		memmap[i].memAddr=&vidMem[(i-TME_VIDMEM_BASE/MEMMAP_ES)*MEMMAP_ES];
-		memmap[i].flags=0;
-	}
-
-	for (i=0x580000/MEMMAP_ES; i<0x600000/MEMMAP_ES; i++) {
-		memmap[i].memAddr=NULL;
-		memmap[i].cb=ncrAccessCb;
-	}
-
-	for (i=0x600000/MEMMAP_ES; i<0x700000/MEMMAP_ES; i++) {
-		memmap[i].memAddr=&macRam[(i*MEMMAP_ES)&(TME_RAMSIZE-1)];
-		memmap[i].flags=0;
-	}
-
-	for (i=0x800000/MEMMAP_ES; i<0xC00000/MEMMAP_ES; i++) {
-		memmap[i].memAddr=NULL;
-		memmap[i].cb=sscAccessCb;
-	}
-
-	for (i=0xc00000/MEMMAP_ES; i<0xe00000/MEMMAP_ES; i++) {
-		memmap[i].memAddr=NULL;
-		memmap[i].cb=iwmAccessCb;
-	}
-	for (i=0xE80000/MEMMAP_ES; i<0xF00000/MEMMAP_ES; i++) {
-		memmap[i].memAddr=NULL;
-		memmap[i].cb=viaAccessCb;
-	}
-	// 0xF00000-0xF80000: SCC interrupt ack (phase read)
-	for (i=0xF00000/MEMMAP_ES; i<0xF80000/MEMMAP_ES; i++) {
-		memmap[i].memAddr=NULL;
-		memmap[i].cb=sccIackCb;
-	}
-	// 0xF80000-0x1000000: SCSI pseudo-DMA / phase-read area
-	for (i=0xF80000/MEMMAP_ES; i<0x1000000/MEMMAP_ES; i++) {
-		memmap[i].memAddr=NULL;
-		memmap[i].cb=scsiDmaCb;
-	}
-}
-
-uint8_t *macFb[2], *macSnd[2];
-
-static void ramInit() {
-	printf("Using PSRAM as Mac RAM (direct memory-mapped)\n");
-	macRam=(unsigned char*)heap_caps_malloc(TME_RAMSIZE, MALLOC_CAP_SPIRAM);
-	assert(macRam);
-	printf("Mac RAM allocated at %p (%d bytes)\n", macRam, TME_RAMSIZE);
-
-	// Separate video memory for large screen hack (mapped at 0x500000-0x580000)
-	vidMem=(unsigned char*)heap_caps_malloc(TME_VIDMEM_SIZE, MALLOC_CAP_SPIRAM);
-	assert(vidMem);
-	printf("Video RAM allocated at %p (%d bytes)\n", vidMem, TME_VIDMEM_SIZE);
-	memset(vidMem, 0xFF, TME_VIDMEM_SIZE);
-
-	macFb[0]=&vidMem[TME_SCREENBUF];
-	macFb[1]=&vidMem[TME_SCREENBUF_ALT];
-	macSnd[0]=&macRam[TME_SNDBUF];
-	macSnd[1]=&macRam[TME_SNDBUF_ALT];
-	printf("Clearing ram...\n");
-	for (int x=0; x<TME_RAMSIZE; x++) macRam[x]=rand();
-}
-
-
-const inline static MemmapEnt *getMmmapEnt(const unsigned int address) {
-	if (address>=MEMMAP_MAX_ADDR) return &memmap[127];
-	return &memmap[address/MEMMAP_ES];
-}
-
-unsigned int m68k_read_memory_8(unsigned int address) {
-	const MemmapEnt *mmEnt=getMmmapEnt(address);
-	if (mmEnt->memAddr) {
-		uint8_t *p;
-		p=(uint8_t*)MMAP_RAM_PTR(mmEnt, address);
-		return *p;
-	} else {
-		return mmEnt->cb(address, 0, 0);
-	}
-}
-
-unsigned int m68k_read_memory_16(unsigned int address) {
-	const MemmapEnt *mmEnt=getMmmapEnt(address);
-	if ((address&1)!=0) printf("%s: Unaligned access to %x!\n", __FUNCTION__, address);
-	if (mmEnt->memAddr) {
-		uint16_t *p;
-		p=(uint16_t*)MMAP_RAM_PTR(mmEnt, address);
-		return __builtin_bswap16(*p);
-	} else {
-		unsigned int ret;
-		ret=mmEnt->cb(address, 0, 0)<<8;
-		ret|=mmEnt->cb(address+1, 0, 0);
-		return ret;
-	}
-}
-
-unsigned int m68k_read_memory_32(unsigned int address) {
-	uint16_t a=m68k_read_memory_16(address);
-	uint16_t b=m68k_read_memory_16(address+2);
-	return (a<<16)|b;
-}
-
-void m68k_write_memory_8(unsigned int address, unsigned int value) {
-	const MemmapEnt *mmEnt=getMmmapEnt(address);
-	if (mmEnt->memAddr) {
-		uint8_t *p;
-		p=(uint8_t*)MMAP_RAM_PTR(mmEnt, address);
-		*p=value;
-	} else {
-		mmEnt->cb(address, value, 1);
-	}
-}
-
-void m68k_write_memory_16(unsigned int address, unsigned int value) {
-	const MemmapEnt *mmEnt=getMmmapEnt(address);
-	if ((address&1)!=0) printf("%s: Unaligned access to %x!\n", __FUNCTION__, address);
-	if (mmEnt->memAddr) {
-		uint16_t *p;
-		p=(uint16_t*)MMAP_RAM_PTR(mmEnt, address);
-		*p=__builtin_bswap16(value);
-	} else {
-		mmEnt->cb(address, (value>>8)&0xff, 1);
-		mmEnt->cb(address+1, (value>>0)&0xff, 1);
-	}
-}
-
-void m68k_write_memory_32(unsigned int address, unsigned int value) {
-	m68k_write_memory_16(address, value>>16);
-	m68k_write_memory_16(address+2, value);
-}
-
-unsigned char *m68k_pcbase=NULL;
-
-void m68k_pc_changed_handler_function(unsigned int address) {
-	const MemmapEnt *mmEnt=getMmmapEnt(address);
-	if (mmEnt->memAddr) {
-		uint8_t *p;
-		p=(uint8_t*)MMAP_RAM_PTR(mmEnt, address);
-		m68k_pcbase=p-address;
-	} else {
-		printf("PC not in mem!\n");
-		abort();
-	}
-}
-
-
-void printFps() {
-	struct timeval tv;
-	static struct timeval oldtv;
-	gettimeofday(&tv, NULL);
-	if (oldtv.tv_sec!=0) {
-		long msec=(tv.tv_sec-oldtv.tv_sec)*1000;
-		msec+=(tv.tv_usec-oldtv.tv_usec)/1000;
-		printf("Speed: %d%%\n", (int)(100000/msec));
-	}
-	oldtv.tv_sec=tv.tv_sec;
-	oldtv.tv_usec=tv.tv_usec;
-}
-
-void tmeStartEmu(void *rom) {
-	int ca1=0, ca2=0;
-	int x, frame=0;
-	int cyclesPerSec=0;
-	macRom=(unsigned char*)rom;
-	ramInit();
-	rom_remap=1;
-	regenMemmap(1);
-	printf("Creating HD and registering it...\n");
-	SCSIDevice *hd=hdCreate("hd.img");
-	ncrRegisterDevice(6, hd);
+static void resetMacHardware(void) {
+	// Put the VIA, SCC, IWM, mouse, and memory mapping back into the
+	// power-on state expected by the ROM bootstrap.
+	viaInit();
+	emuViaIrqPending = false;
+	emuSccIrqPending = false;
+	updateCpuIrq();
 	viaClear(VIA_PORTA, 0x7F);
 	viaSet(VIA_PORTA, 0x80);
 	viaClear(VIA_PORTA, 0xFF);
 	viaSet(VIA_PORTB, (1<<3));
 	sccInit();
-	printf("Initializing m68k...\n");
-	m68k_pc_changed_handler_function(0x0);
-	m68k_init();
-	printf("Setting CPU type and resetting...");
-	m68k_set_cpu_type(M68K_CPU_TYPE_68000);
-	m68k_pulse_reset();
-	printf("Display init...\n");
-	sndInit();
-	dispInit();
-	printf("Done! Running.\n");
-	while(1) {
-		for (x=0; x<8000000/60; x+=1000) {
-			m68k_execute(1000);
-			viaStep(100);
-			sccTick(100);
+	iwmInit();
+	ncrInit();
+	mouseReset();
+	rom_remap = 1;
+	video_remap = 0;
+	audio_remap = 0;
+	audio_volume = 0;
+	audio_en = 0;
+	surpassCycles = 0;
+	mmuSetRomRemap(rom_remap);
+	vmuSelectMacSurface(video_remap ? VMU_SURFACE_MAIN : VMU_SURFACE_ALTERNATE);
+}
 
-			int r=mouseTick();
-			if (r&MOUSE_BTN) viaClear(VIA_PORTB, (1<<3)); else viaSet(VIA_PORTB, (1<<3));
-			if (r&MOUSE_QXB) viaClear(VIA_PORTB, (1<<4)); else viaSet(VIA_PORTB, (1<<4));
-			if (r&MOUSE_QYB) viaClear(VIA_PORTB, (1<<5)); else viaSet(VIA_PORTB, (1<<5));
-			sccSetDcd(SCC_CHANA, r&MOUSE_QXA);
-			sccSetDcd(SCC_CHANB, r&MOUSE_QYA);
+static void macResetInstruction(void) {
+    // The ROM can execute RESET; mirror that by restoring hardware defaults.
+    printf("M68K RESET instruction: resetting Mac hardware\n");
+	resetMacHardware();
+}
 
-			if (x>(8000000/120) && sndDone()) break;
-		}
-		cyclesPerSec+=x;
-		dispDraw(macFb[video_remap?1:0]);
-		sndPush(macSnd[audio_remap?1:0], audio_en?audio_volume:0);
-		vTaskDelay(1); // yield to prevent watchdog timeout
-		frame++;
-		ca1^=1;
-		viaControlWrite(VIA_CA1, ca1);
-		if (frame==59) {
-			ca2^=1;
-			viaControlWrite(VIA_CA2, ca2);
-		}
-		if (frame>=60) {
-			ca2^=1;
-			viaControlWrite(VIA_CA2, ca2);
-			rtcTick();
-			frame=0;
-			printFps();
-			printf("%d Hz\n", cyclesPerSec);
-			cyclesPerSec=0;
-		}
+static void ramInit() {
+    // Allocate the RAM, video buffers, and sound backings before emulation starts.
+    // Allocate the Mac RAM and the two framebuffer backings up front.
+	logEmuHeap("before ramInit");
+	printf("Using PSRAM as Mac RAM (direct memory-mapped)\n");
+	macRam=(uint8_t*)tme_psram_aligned_alloc(TME_RAMSIZE, MALLOC_CAP_SPIRAM);
+	assert(macRam);
+	memset(macRam, 0xFF, TME_RAMSIZE);
+	printf("Mac RAM allocated at %p (%d bytes)\n", macRam, TME_RAMSIZE);
+
+	macSnd[0]=&macRam[TME_SNDBUF];
+	macSnd[1]=&macRam[TME_SNDBUF_ALT];
+	memset(emuSoundRawFrame, 128, sizeof(emuSoundRawFrame));
+	logEmuHeap("after ramInit");
+}
+
+static void stepPeripheralClocks(int cpuCycles) {
+
+	static int emuPendingEclockCycles = 0;
+
+	// Keep the VIA and SCC running in lockstep with CPU execution.
+	emuPendingEclockCycles += cpuCycles;
+	int eclockCycles = emuPendingEclockCycles / EMU_VIA_ECLOCK_DIV;
+	emuPendingEclockCycles -= eclockCycles * EMU_VIA_ECLOCK_DIV;
+
+	if (eclockCycles > 0) {
+		viaStep(eclockCycles);
+		// sccTick(eclockCycles);
 	}
 }
 
+void tmeStartEmu(void *rom, const char *hdImagePaths[SCSI_TARGET_COUNT],
+                 const char *fddImagePaths[PV_FDD_DRIVE_COUNT]) {
+	// Build the machine, then keep feeding CPU time, VBL, display, and audio forever.
+	emuStopRequested = false;
+	emuStopped = false;
+	logEmuHeap("tmeStartEmu entry");
+	macRom=(unsigned char*)rom;
+	ramInit();
+	logEmuHeap("after ramInit call");
+	MmuContext mmuCtx = {
+		.rom = macRom,
+		.ram = macRam,
+		.fb = {
+			vmuGetMappedBuffer(VMU_SURFACE_MAIN),
+			vmuGetMappedBuffer(VMU_SURFACE_ALTERNATE),
+		},
+		.romRemap = &rom_remap,
+	};
+	mmuSetContext(&mmuCtx);
+	vmuAttachMmu();
+	logEmuHeap("after mmu/vmu attach");
+	pvFddInit(fddImagePaths, macRam, TME_RAMSIZE);
+	logEmuHeap("after pvFddInit");
+	resetMacHardware();
+	logEmuHeap("after resetMacHardware");
+	for (int id = 0; id < SCSI_TARGET_COUNT; ++id) {
+		if (hdImagePaths[id] && hdImagePaths[id][0]) {
+			ncrRegisterDevice(id, hdCreate(hdImagePaths[id]));
+			logEmuHeap("after hdCreate");
+		}
+	}
+	printf("Initializing m68k...\n");
+	logEmuHeap("before m68k_init");
+	m68k_pc_changed_handler_function(0x0);
+	m68k_init();
+	logEmuHeap("after m68k_init");
+	printf("Setting CPU type and resetting...");
+	m68k_set_cpu_type(M68K_CPU_TYPE_68000);
+	m68k_set_reset_instr_callback(macResetInstruction);
+	m68k_pulse_reset();
+	emuCpuReady = true;
+	updateCpuIrq();
+	printf("Done! Running.\n");
+	logEmuHeap("before dispInit");
+	dispInit();
+	logEmuHeap("after dispInit");
+
+	/**
+	 * Aligning CPU Slices with ROM Sound API
+	 *
+	 * Background:
+	 * The MacPlus ROM sound paths utilize specific write-start offsets:
+	 * - 4-tone normal: Offset 0x172 (~sample 185)
+	 * - 4-tone solo:   Offset 0x8C  (~sample 70)
+	 * - Free-form:     Offset 0x40  (~sample 32)
+	 *
+	 * Previously, the sound was distorted because CPU slices were triggered at fixed
+	 * 5-scanline intervals (370 bytes/VBI), ignoring these specific buffer entry points.
+	 *
+	 * New Approach:
+	 * Instead of fixed-interval slices, we dynamically adjust the CPU slice timing
+	 * to synchronize with the ROM sound API's write-start scanlines (32, 70, 185).
+	 *
+	 * Implementation:
+	 * - Replace fixed 5-scanline stepping with conditional logic to trigger slices
+	 *   at the critical sync points.
+	 * - Current sequence: 0, 5, ..., 25, 32, 40, ..., 65, 70, ..., 180, 185, ...
+	 * - Each CPU slice now calculates and updates only the segment of the sound
+	 *   buffer corresponding to the scanline range since the last slice.
+	 * - This eliminates the need for constant look-up tables by using branching
+	 *   logic to determine the next target scanline.
+	 */
+	
+	int ca2 = 0;
+	int frame = 0, speedFrame = 0, slice = 0;
+
+	while(!emuStopRequested) {
+		// Image files are opened only on the emulator task, between guest slices.
+		pvFddProcessRequests();
+
+		int64_t frameStartUs = esp_timer_get_time();
+
+		// The 60.15Hz interrupt(VBL) is a signal generated by a PAL oncee very 16.63ms,
+		// at the start of the vertical blanking intervalf or the built-in video monitor.
+		// VBL is a pulse, not a square wave. Drive both edges so the VIA sees
+		// its configured active edge once per frame rather than every other frame.
+		viaControlWrite(VIA_CA1, 1);
+		viaControlWrite(VIA_CA1, 0);
+		emuSoundFrameStartGateEnabled = audio_en;
+		emuSoundGateEventCount = 0;
+
+		for (scanline_start = 0, slice = 0; scanline_start < EMU_MAC_SCANLINES;
+			 scanline_start = scanline_end, ++slice) {
+			if (scanline_start == 25) {
+				scanline_end = 32;
+			} else if (scanline_start == 32) {
+				scanline_end = 40;
+			} else {
+				scanline_end = scanline_start + 5;
+			}
+
+			// Compensate for the previous CPU overrun to keep the average
+			// execution time aligned with the scanline clock.
+			int request = EMU_MAC_SCANLINE_CYCLES * (scanline_end - scanline_start) - surpassCycles;
+			int cpuCycles = m68k_execute(request);
+			surpassCycles = cpuCycles - request;
+			stepPeripheralClocks(cpuCycles);
+
+			// Capture raw Sound Manager output. Gate timing is passed separately
+			// so RMT/SPI-style backends can merge the saved PB7 transitions
+			// with the same post-execute slice data used by the older PWM path.
+			uint8_t *source = macSnd[audio_remap ? 0 : 1];
+			for (uint16_t i = scanline_start; i < scanline_end; ++i) {
+				emuSoundRawFrame[i] = source[i * 2];
+			}
+
+			if ((slice & 1) == 1) {
+				mouseTick();
+			}
+
+		}
+
+		// Apply display surface switches at the VBI boundary; Mac screen scanout
+		// itself is continuous, while the console renderer refreshes on its task.
+		dispApplyPendingMode();
+
+		// VBL and 1-second events arrive as VIA input control-line edges on CA1/CA2.
+		++frame;
+		if (frame == (EMU_VBL_RATE_HZ - 1)) {
+			ca2 ^= 1;
+			viaControlWrite(VIA_CA2, ca2);
+		} else if (frame >= EMU_VBL_RATE_HZ) {
+			ca2 ^= 1;
+			viaControlWrite(VIA_CA2, ca2);
+			frame = 0;
+			rtcTick();
+		}
+
+		// Feed one raw sound frame plus PB7 gate transitions every VBL.
+		bool hasSound = sndPushMacFrame(emuSoundRawFrame,
+		                                audio_volume,
+		                                emuSoundFrameStartGateEnabled,
+		                                emuSoundGateEvents,
+		                                emuSoundGateEventCount);
+		if (emuSoundGateOverflowFrames != emuSoundGateOverflowFramesLogged) {
+			emuSoundGateOverflowFramesLogged = emuSoundGateOverflowFrames;
+			printf("AUDIO: gate event overflow frames=%u\n", (unsigned)emuSoundGateOverflowFramesLogged);
+		}
+
+		// Turbo mode has no audio wait and can otherwise starve IDLE1 long enough
+		// to trigger the task watchdog. Yield one tick per guest second only while
+		// realtime audio synchronization is being skipped.
+		if (!hasSound && (speedFrame % EMU_VBL_RATE_HZ) == (EMU_VBL_RATE_HZ - 1)) {
+			vTaskDelay(1);
+		}
+
+		emuMonitorAddBusyTime(esp_timer_get_time() - frameStartUs);
+		if (++speedFrame>=EMU_MONITOR_LOG_INTERVAL_FRAMES) {
+			speedFrame=0;
+			appSetRealtimeSyncSkipped(!hasSound);
+			emuMonitorPublishSample(hasSound);
+		}
+
+	}
+	emuCpuReady = false;
+	pvFddShutdown();
+	hdShutdownAll();
+	emuStopped = true;
+	printf("Emulator stopped\n");
+}
+
+void tmeRequestStop(void) {
+	emuStopRequested = true;
+}
+
+bool tmeEmuStopped(void) {
+	return emuStopped;
+}
+
 void viaIrq(int req) {
-	m68k_set_irq(req?1:0);
+	emuViaIrqPending = req != 0;
+	updateCpuIrq();
 }
 
 void sccIrq(int req) {
-	m68k_set_irq(req?2:0);
+	emuSccIrqPending = req != 0;
+	updateCpuIrq();
 }
 
 
 void viaCbPortAWrite(unsigned int val) {
-	static int writes=0;
-	if ((writes++)==0) val=0x67;
+	// Port A carries the bank-switch and floppy-head signals from the ROM.
+	// VIA port A controls ROM/video/audio bank switches and floppy head select.
 	video_remap=(val&(1<<6))?1:0;
+	vmuSelectMacSurface(video_remap ? VMU_SURFACE_MAIN : VMU_SURFACE_ALTERNATE);
 	rom_remap=(val&(1<<4))?1:0;
 	audio_remap=(val&(1<<3))?1:0;
 	audio_volume=(val&7);
 	iwmSetHeadSel(val&(1<<5));
-	regenMemmap(rom_remap);
+	mmuSetRomRemap(rom_remap);
 }
 
 void viaCbPortBWrite(unsigned int val) {
+
+	bool prev_audio_en = audio_en;
+
+    // Port B carries RTC serial signaling and the active-low /SNDRES line.
 	int b;
 	b=rtcCom(val&4, val&1, val&2);
 	if (b) viaSet(VIA_PORTB, 1); else viaClear(VIA_PORTB, 1);
 	audio_en=!(val&(1<<7));
+
+	// Record only gate edges.  PWM/PDM consume this list while rendering the
+	// frame, so keeping the state change at its original CPU-cycle position is
+	// more accurate than sampling audio_en once per scanline.
+	if (prev_audio_en != audio_en) {
+		// m68k_cycles_run() is relative to the current CPU slice.  Add the
+		// previous slice's overrun correction so the event remains on the
+		// Macintosh's continuous 352-cycle scanline timeline.
+		int sliceCycle = m68k_cycles_run() + surpassCycles;
+		if (emuSoundGateEventCount < SND_GATE_MAX_EVENTS) {
+			SndGateEvent *event = &emuSoundGateEvents[emuSoundGateEventCount++];
+			// Convert the absolute cycle within this frame to line/cycle
+			// coordinates used by the audio backends.
+			event->line = scanline_start + sliceCycle / EMU_MAC_SCANLINE_CYCLES;
+			event->cycle = sliceCycle % EMU_MAC_SCANLINE_CYCLES;
+			event->state = audio_en ? SND_GATE_ENABLE : SND_GATE_DISABLE;
+		} else {
+			// Do not overwrite earlier edges; report that this frame could
+			// not represent every transition.
+			++emuSoundGateOverflowFrames;
+		}
+	}
 }

@@ -2,9 +2,14 @@
 #define NCR_H
 #include <stdint.h>
 
+#define SCSI_BUS_ID_COUNT 8
+#define SCSI_INITIATOR_ID 7
+#define SCSI_TARGET_COUNT SCSI_INITIATOR_ID
+#define SCSI_DATA_BUFFER_SIZE (128*1024)
+
 typedef struct {
 	uint8_t cmd[256];
-	uint8_t data[32*1024];
+	uint8_t *data;
 	uint8_t msg[128];
 	int cmdlen;
 	int datalen;

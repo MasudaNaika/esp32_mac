@@ -29,12 +29,24 @@
 
 
 
-
 #ifndef M68KCPU__HEADER
 #define M68KCPU__HEADER
 
+#include "esp_attr.h"
 #include "m68k.h"
 #include <limits.h>
+
+#ifndef ESP32_MAC_HOT_OPCODE_IRAM
+#define ESP32_MAC_HOT_OPCODE_IRAM 0
+#endif
+
+#ifndef M68K_OP_HOT_ATTR
+#if ESP32_MAC_HOT_OPCODE_IRAM
+#define M68K_OP_HOT_ATTR IRAM_ATTR
+#else
+#define M68K_OP_HOT_ATTR
+#endif
+#endif
 
 #if M68K_EMULATE_ADDRESS_ERROR
 #include <setjmp.h>
@@ -749,11 +761,22 @@ typedef unsigned int uint;
 
 /* ---------------------------- Cycle Counting ---------------------------- */
 
+typedef void (*m68ki_instruction_jump_call)(void);
+
+typedef struct {
+	m68ki_instruction_jump_call handler;
+	unsigned char cycles;
+} m68ki_dispatch_entry;
+_Static_assert(sizeof(m68ki_dispatch_entry) == 8,
+	"The 68K dispatch table requires 8-byte entries");
+extern m68ki_dispatch_entry *m68ki_dispatch_table;
+
 #define ADD_CYCLES(A)    m68ki_remaining_cycles += (A)
 #define USE_CYCLES(A)    m68ki_remaining_cycles -= (A)
 #define SET_CYCLES(A)    m68ki_remaining_cycles = A
 #define GET_CYCLES()     m68ki_remaining_cycles
-#define USE_ALL_CYCLES() m68ki_remaining_cycles %= CYC_INSTRUCTION[REG_IR]
+#define M68KI_INSTRUCTION_CYCLES(opcode) m68ki_dispatch_table[(opcode)].cycles
+#define USE_ALL_CYCLES() m68ki_remaining_cycles %= M68KI_INSTRUCTION_CYCLES(REG_IR)
 
 
 
@@ -842,8 +865,8 @@ typedef struct
 	uint cyc_movem_l;
 	uint cyc_shift;
 	uint cyc_reset;
-	uint8* cyc_instruction;
-	uint8* cyc_exception;
+	const uint8* cyc_instruction;
+	const uint8* cyc_exception;
 
 	/* Callbacks to host */
 	int  (*int_ack_callback)(int int_line);           /* Interrupt Acknowledge */
@@ -862,7 +885,7 @@ extern uint           m68ki_tracing;
 extern const uint8          m68ki_shift_8_table[];
 extern const uint16         m68ki_shift_16_table[];
 extern const uint           m68ki_shift_32_table[];
-extern uint8          m68ki_exception_cycle_table[][256];
+extern const uint8    m68ki_exception_cycle_table[][256];
 extern uint           m68ki_address_space;
 extern uint8          m68ki_ea_idx_cycle_table[];
 
@@ -1734,7 +1757,7 @@ INLINE void m68ki_exception_trap(uint vector)
 	m68ki_jump_vector(vector);
 
 	/* Use up some clock cycles and undo the instruction's cycles */
-	USE_CYCLES(CYC_EXCEPTION[vector] - CYC_INSTRUCTION[REG_IR]);
+	USE_CYCLES(CYC_EXCEPTION[vector] - M68KI_INSTRUCTION_CYCLES(REG_IR));
 }
 
 /* Trap#n stacks a 0 frame but behaves like group2 otherwise */
@@ -1745,7 +1768,7 @@ INLINE void m68ki_exception_trapN(uint vector)
 	m68ki_jump_vector(vector);
 
 	/* Use up some clock cycles and undo the instruction's cycles */
-	USE_CYCLES(CYC_EXCEPTION[vector] - CYC_INSTRUCTION[REG_IR]);
+	USE_CYCLES(CYC_EXCEPTION[vector] - M68KI_INSTRUCTION_CYCLES(REG_IR));
 }
 
 /* Exception for trace mode */
@@ -1791,7 +1814,7 @@ INLINE void m68ki_exception_privilege_violation(void)
 	m68ki_jump_vector(EXCEPTION_PRIVILEGE_VIOLATION);
 
 	/* Use up some clock cycles and undo the instruction's cycles */
-	USE_CYCLES(CYC_EXCEPTION[EXCEPTION_PRIVILEGE_VIOLATION] - CYC_INSTRUCTION[REG_IR]);
+	USE_CYCLES(CYC_EXCEPTION[EXCEPTION_PRIVILEGE_VIOLATION] - M68KI_INSTRUCTION_CYCLES(REG_IR));
 }
 
 /* Exception for A-Line instructions */
@@ -1809,7 +1832,7 @@ INLINE void m68ki_exception_1010(void)
 	m68ki_jump_vector(EXCEPTION_1010);
 
 	/* Use up some clock cycles and undo the instruction's cycles */
-	USE_CYCLES(CYC_EXCEPTION[EXCEPTION_1010] - CYC_INSTRUCTION[REG_IR]);
+	USE_CYCLES(CYC_EXCEPTION[EXCEPTION_1010] - M68KI_INSTRUCTION_CYCLES(REG_IR));
 }
 
 /* Exception for F-Line instructions */
@@ -1828,7 +1851,7 @@ INLINE void m68ki_exception_1111(void)
 	m68ki_jump_vector(EXCEPTION_1111);
 
 	/* Use up some clock cycles and undo the instruction's cycles */
-	USE_CYCLES(CYC_EXCEPTION[EXCEPTION_1111] - CYC_INSTRUCTION[REG_IR]);
+	USE_CYCLES(CYC_EXCEPTION[EXCEPTION_1111] - M68KI_INSTRUCTION_CYCLES(REG_IR));
 }
 
 /* Exception for illegal instructions */
@@ -1853,7 +1876,7 @@ INLINE void m68ki_exception_illegal(void)
 	m68ki_jump_vector(EXCEPTION_ILLEGAL_INSTRUCTION);
 
 	/* Use up some clock cycles and undo the instruction's cycles */
-	USE_CYCLES(CYC_EXCEPTION[EXCEPTION_ILLEGAL_INSTRUCTION] - CYC_INSTRUCTION[REG_IR]);
+	USE_CYCLES(CYC_EXCEPTION[EXCEPTION_ILLEGAL_INSTRUCTION] - M68KI_INSTRUCTION_CYCLES(REG_IR));
 }
 
 /* Exception for format errror in RTE */
@@ -1864,7 +1887,7 @@ INLINE void m68ki_exception_format_error(void)
 	m68ki_jump_vector(EXCEPTION_FORMAT_ERROR);
 
 	/* Use up some clock cycles and undo the instruction's cycles */
-	USE_CYCLES(CYC_EXCEPTION[EXCEPTION_FORMAT_ERROR] - CYC_INSTRUCTION[REG_IR]);
+	USE_CYCLES(CYC_EXCEPTION[EXCEPTION_FORMAT_ERROR] - M68KI_INSTRUCTION_CYCLES(REG_IR));
 }
 
 /* Exception for address error */

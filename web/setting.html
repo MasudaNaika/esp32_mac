@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP32 Mac Settings</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#101214;color:#d7d7d7;font:15px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}
+header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #34383d}
+main{max-width:920px;margin:0 auto;padding:16px}
+a{color:#85b7ff;text-decoration:none}
+section{padding:16px 0;border-bottom:1px solid #2d3238}
+h2{font-size:18px;margin:0 0 12px}
+label{display:block;margin:10px 0}
+input,select,button{font:inherit;border:1px solid #4b5158;background:#181b1f;color:#f0f0f0;padding:10px}
+input[type=text],input[type=password]{width:min(520px,100%)}
+select{max-width:100%}
+button{cursor:pointer;background:#243247}
+button.danger{background:#4a2525;border-color:#7f3a3a}
+.help{max-width:760px;color:#b8c0c8}
+.diskList{max-width:560px}
+.diskList label{margin:10px 0}
+.diskList select{width:min(520px,100%)}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:end}
+.fieldRow{display:flex;flex-wrap:wrap;gap:8px;align-items:end}
+.fieldRow label{margin:10px 0 0}
+.switches{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px 14px;max-width:760px}
+.switches select{width:100%}
+pre{white-space:pre-wrap;border:1px solid #34383d;background:#050607;padding:12px;min-height:80px}
+</style>
+</head>
+<body>
+<header>
+  <strong>ESP32 Mac Settings</strong>
+  <nav><a href="/">home</a> | <a href="/files">files</a> | <a href="/console">console</a></nav>
+</header>
+<main>
+  <section>
+    <h2>Boot Settings</h2>
+    <form id="settingsForm">
+      <div class="fieldRow">
+        <label>SSID<br><input name="ssid" type="text" autocomplete="off" list="ssidList"></label>
+        <button id="scanWifi" type="button">Scan</button>
+        <label>Scan results<br><select id="ssidScanResults"><option value="">scan first</option></select></label>
+      </div>
+      <datalist id="ssidList"></datalist>
+      <label>Password<br><input name="password" type="password" autocomplete="off"></label>
+      <label>NTP server<br><input name="server" type="text"></label>
+      <label>Timezone<br><input name="tz" type="text" placeholder="+09:00"></label>
+      <label>ROM<br><input name="rom" type="text" placeholder="macplus.rom" list="romList"></label>
+      <datalist id="romList"></datalist>
+      <div class="diskList">
+        <label>FD0<br><select name="fd0" data-file-select="fd"><option value="">none</option></select></label>
+        <label>FD1<br><select name="fd1" data-file-select="fd"><option value="">none</option></select></label>
+      </div>
+      <div class="diskList">
+        <label>HD0<br><select name="hd0" data-file-select="hd"><option value="">none</option></select></label>
+        <label>HD1<br><select name="hd1" data-file-select="hd"><option value="">none</option></select></label>
+        <label>HD2<br><select name="hd2" data-file-select="hd"><option value="">none</option></select></label>
+        <label>HD3<br><select name="hd3" data-file-select="hd"><option value="">none</option></select></label>
+        <label>HD4<br><select name="hd4" data-file-select="hd"><option value="">none</option></select></label>
+        <label>HD5<br><select name="hd5" data-file-select="hd"><option value="">none</option></select></label>
+        <label>HD6<br><select name="hd6" data-file-select="hd"><option value="">none</option></select></label>
+      </div>
+      <div class="switches">
+        <label>Log output<br>
+          <select name="log"><option value="on">on</option><option value="off">off</option></select>
+        </label>
+        <label>LCD flip 180<br>
+          <select name="lcdflip"><option value="off">off</option><option value="on">on</option></select>
+        </label>
+        <label>Turbo<br>
+          <select name="turbo"><option value="on">on</option><option value="off">off</option></select>
+        </label>
+        <label>Audio<br>
+          <select name="audio"><option value="pwm">pwm</option><option value="pdm">pdm</option><option value="rmt">rmt</option></select>
+        </label>
+        <label>Boot info<br>
+          <select name="boot_info"><option value="on">on</option><option value="off">off</option></select>
+        </label>
+      </div>
+      <button type="submit">Save</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Chrome Secure Origin</h2>
+    <p class="help">Chrome may block keyboard input and some browser APIs on <code>http://esp32mac.local</code> because it is not HTTPS. Click the button to copy <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code>, paste it into Chrome's address bar, add <code>http://esp32mac.local</code> to <code>Insecure origins treated as secure</code>, enable the flag, and relaunch Chrome.</p>
+    <button id="openChromeFlags" type="button">Copy Chrome flags URL</button>
+  </section>
+
+  <section>
+    <h2>System</h2>
+    <button id="reboot" class="danger" type="button">Reboot</button>
+  </section>
+
+  <pre id="message"></pre>
+</main>
+<script>
+const settingsForm = document.getElementById('settingsForm');
+const message = document.getElementById('message');
+const ssidList = document.getElementById('ssidList');
+const ssidScanResults = document.getElementById('ssidScanResults');
+const romList = document.getElementById('romList');
+const chromeFlagsUrl = 'chrome://flags/#unsafely-treat-insecure-origin-as-secure';
+
+function say(text) {
+  message.textContent += `${text}\n`;
+}
+
+function canonicalStorageValue(kind, value) {
+  if (!value) return '';
+  const sdPrefix = `/sd/${kind}/`;
+  const rootPrefix = `/${kind}/`;
+  if (value.startsWith(sdPrefix)) return `${kind}/${value.slice(sdPrefix.length)}`;
+  if (value.startsWith(rootPrefix)) return `${kind}/${value.slice(rootPrefix.length)}`;
+  return value;
+}
+
+async function loadSettings() {
+  const res = await fetch('/api/settings');
+  const settings = await res.json();
+  for (const [key, value] of Object.entries(settings)) {
+    const field = settingsForm.elements[key];
+    if (!field) continue;
+    const kind = field.dataset ? field.dataset.fileSelect : '';
+    const displayValue = kind ? canonicalStorageValue(kind, value) : (value || '');
+    if (field.tagName === 'SELECT' && displayValue && !Array.from(field.options).some(option => option.value === displayValue)) {
+      const option = document.createElement('option');
+      option.value = displayValue;
+      option.textContent = displayValue;
+      field.appendChild(option);
+    }
+    field.value = displayValue;
+  }
+}
+
+async function scanWifi() {
+  say('Scanning Wi-Fi...');
+  const res = await fetch('/api/wifi/scan');
+  if (!res.ok) {
+    say(`Scan failed: ${await res.text()}`);
+    return;
+  }
+  const data = await res.json();
+  const networks = data.networks || [];
+  ssidList.textContent = '';
+  ssidScanResults.textContent = '';
+  const first = document.createElement('option');
+  first.value = '';
+  first.textContent = networks.length ? 'select SSID' : 'no networks';
+  ssidScanResults.appendChild(first);
+  for (const network of networks) {
+    const option = document.createElement('option');
+    option.value = network.ssid;
+    option.label = `${network.rssi} dBm ${network.auth} ch${network.channel}`;
+    ssidList.appendChild(option);
+    const selectOption = document.createElement('option');
+    selectOption.value = network.ssid;
+    selectOption.textContent = `${network.ssid} (${network.rssi} dBm ${network.auth} ch${network.channel})`;
+    ssidScanResults.appendChild(selectOption);
+  }
+  say(`Scan found ${networks.length} network(s)`);
+}
+
+function fillDataList(list, values) {
+  list.textContent = '';
+  for (const value of values || []) {
+    const option = document.createElement('option');
+    option.value = value;
+    list.appendChild(option);
+  }
+}
+
+function fillFileSelects(kind, values) {
+  for (const select of settingsForm.querySelectorAll(`select[data-file-select="${kind}"]`)) {
+    const selected = canonicalStorageValue(kind, select.value);
+    const seen = new Set(['']);
+    select.textContent = '';
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'none';
+    select.appendChild(none);
+    for (const value of values || []) {
+      const canonical = canonicalStorageValue(kind, value);
+      if (seen.has(canonical)) continue;
+      seen.add(canonical);
+      const option = document.createElement('option');
+      option.value = canonical;
+      option.textContent = canonical;
+      select.appendChild(option);
+    }
+    if (selected && !Array.from(select.options).some(option => option.value === selected)) {
+      const option = document.createElement('option');
+      option.value = selected;
+      option.textContent = selected;
+      select.appendChild(option);
+    }
+    select.value = selected || '';
+  }
+}
+
+async function loadFileOptions() {
+  const res = await fetch('/api/files');
+  if (!res.ok) {
+    say(`File list failed: ${await res.text()}`);
+    return;
+  }
+  const files = await res.json();
+  fillDataList(romList, files.rom);
+  fillFileSelects('fd', files.fd);
+  fillFileSelects('hd', files.hd);
+}
+
+settingsForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  const res = await fetch('/api/settings', {
+    method: 'POST',
+    body: new URLSearchParams(new FormData(settingsForm))
+  });
+  say(await res.text());
+});
+
+document.getElementById('scanWifi').addEventListener('click', scanWifi);
+ssidScanResults.addEventListener('change', () => {
+  if (ssidScanResults.value) {
+    settingsForm.elements.ssid.value = ssidScanResults.value;
+  }
+});
+document.getElementById('openChromeFlags').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(chromeFlagsUrl);
+    say(`Copied: ${chromeFlagsUrl}`);
+  } catch (error) {
+    say(`Copy this URL manually: ${chromeFlagsUrl}`);
+  }
+});
+document.getElementById('reboot').addEventListener('click', async () => {
+  if (!confirm('Reboot ESP32 Mac now?')) return;
+  say('Rebooting...');
+  try {
+    const res = await fetch('/api/console', { method: 'POST', body: 'reboot' });
+    say(await res.text());
+  } catch (error) {
+    say(`Reboot request failed: ${error.message}`);
+  }
+});
+
+loadSettings().catch(error => say(`Load failed: ${error.message}`));
+loadFileOptions().catch(error => say(`File list failed: ${error.message}`));
+</script>
+</body>
+</html>

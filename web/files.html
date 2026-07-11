@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP32 Mac Files</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#101214;color:#d7d7d7;font:15px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}
+header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #34383d}
+main{max-width:980px;margin:0 auto;padding:16px}
+a{color:#85b7ff;text-decoration:none}
+button,input,select{font:inherit;border:1px solid #4b5158;background:#181b1f;color:#f0f0f0;padding:9px}
+button{cursor:pointer;background:#243247}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px}
+.path{color:#aab3bd}
+table{width:100%;border-collapse:collapse;border:1px solid #34383d}
+th,td{padding:9px;border-bottom:1px solid #2d3238;text-align:left}
+th{color:#aab3bd;font-weight:400}
+td:last-child,th:last-child{text-align:right}
+.nameBtn{background:none;border:0;color:#85b7ff;padding:0;text-align:left}
+.actionSelect{min-width:96px}
+.mounted,.mounted a,.mounted .nameBtn{color:#ffcf7a}
+#dropZone{border:1px dashed #4b5158;color:#aab3bd;padding:18px;margin:0 0 12px;text-align:center}
+#dropZone.drag{border-color:#85b7ff;color:#d7d7d7;background:#182233}
+#message{white-space:pre-wrap;min-height:24px;color:#b8c0c8;margin-top:12px}
+</style>
+</head>
+<body>
+<header>
+  <strong>ESP32 Mac Files</strong>
+  <nav><a href="/">home</a> | <a href="/setting">setting</a> | <a href="/console">console</a></nav>
+</header>
+<main>
+  <div class="bar">
+    <button id="up" type="button">Up</button>
+    <span class="path">/sd/<span id="path"></span></span>
+  </div>
+  <form id="mkdirForm" class="bar">
+    <input id="folderName" autocomplete="off" placeholder="new folder">
+    <button type="submit">Create folder</button>
+    <button id="refresh" type="button">Refresh</button>
+  </form>
+  <div id="dropZone">Drop files anywhere on this page to upload to this folder</div>
+  <table>
+    <thead><tr><th>Name</th><th>Type</th><th>Size</th><th></th></tr></thead>
+    <tbody id="entries"></tbody>
+  </table>
+  <div id="message"></div>
+</main>
+<script>
+const pathEl = document.getElementById('path');
+const entriesEl = document.getElementById('entries');
+const message = document.getElementById('message');
+const folderName = document.getElementById('folderName');
+const dropZone = document.getElementById('dropZone');
+let currentPath = '';
+let parentPath = '';
+
+function say(text) {
+  message.textContent = text;
+}
+
+function joinPath(base, name) {
+  return base ? `${base}/${name}` : name;
+}
+
+function formatSize(size, type) {
+  if (type === 'dir') return '';
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${size} B`;
+}
+
+async function load(path = currentPath) {
+  const res = await fetch(`/api/filer?path=${encodeURIComponent(path)}`);
+  if (!res.ok) {
+    say(`Load failed: ${await res.text()}`);
+    return;
+  }
+  const data = await res.json();
+  currentPath = data.path || '';
+  parentPath = data.parent || '';
+  pathEl.textContent = currentPath;
+  entriesEl.textContent = '';
+  for (const entry of data.entries || []) {
+    const tr = document.createElement('tr');
+    const nameTd = document.createElement('td');
+    if (entry.type === 'dir') {
+      const button = document.createElement('button');
+      button.className = 'nameBtn';
+      button.type = 'button';
+      button.textContent = `${entry.name}/${entry.mounted ? ' [mounted]' : ''}`;
+      button.addEventListener('click', () => load(entry.path));
+      nameTd.appendChild(button);
+    } else {
+      const link = document.createElement('a');
+      link.href = `/api/filer/download?path=${encodeURIComponent(entry.path)}`;
+      link.textContent = `${entry.name}${entry.mounted ? ' [mounted]' : ''}`;
+      nameTd.appendChild(link);
+    }
+    if (entry.mounted) nameTd.classList.add('mounted');
+    const typeTd = document.createElement('td');
+    typeTd.textContent = entry.type;
+    const sizeTd = document.createElement('td');
+    sizeTd.textContent = formatSize(entry.size || 0, entry.type);
+    const actionTd = document.createElement('td');
+    const action = document.createElement('select');
+    action.className = 'actionSelect';
+    action.disabled = !!entry.mounted;
+    action.innerHTML = entry.mounted
+      ? '<option value="">Mounted</option>'
+      : '<option value="">Action</option><option value="rename">Rename</option><option value="delete">Delete</option>';
+    action.addEventListener('change', async () => {
+      const value = action.value;
+      action.value = '';
+      if (value === 'rename') await renamePath(entry.path, entry.name);
+      if (value === 'delete') await deletePath(entry.path, entry.name);
+    });
+    actionTd.appendChild(action);
+    tr.append(nameTd, typeTd, sizeTd, actionTd);
+    entriesEl.appendChild(tr);
+  }
+  say('');
+}
+
+async function postFields(url, fields) {
+  const res = await fetch(url, {
+    method: 'POST',
+    body: new URLSearchParams(fields)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.text();
+}
+
+async function postForm(url, path) {
+  return postFields(url, { path });
+}
+
+async function renamePath(path, name) {
+  const nextName = prompt('New name', name);
+  if (!nextName || nextName === name) return;
+  try {
+    await postFields('/api/filer/rename', { path, name: nextName });
+    await load();
+  } catch (error) {
+    say(`Rename failed: ${error.message}`);
+  }
+}
+
+async function deletePath(path, name) {
+  if (!confirm(`Delete ${name}?`)) return;
+  try {
+    await postForm('/api/filer/delete', path);
+    await load();
+  } catch (error) {
+    say(`Delete failed: ${error.message}`);
+  }
+}
+
+document.getElementById('mkdirForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const name = folderName.value.trim();
+  if (!name) return;
+  try {
+    await postForm('/api/filer/mkdir', joinPath(currentPath, name));
+    folderName.value = '';
+    await load();
+  } catch (error) {
+    say(`Create failed: ${error.message}`);
+  }
+});
+
+document.getElementById('up').addEventListener('click', () => load(parentPath));
+document.getElementById('refresh').addEventListener('click', () => load());
+
+async function uploadFile(file) {
+  const target = `sd/${joinPath(currentPath, file.name)}`;
+  const res = await fetch(`/upload?path=${encodeURIComponent(target)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: file
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+async function uploadDroppedFiles(fileList) {
+  const files = Array.from(fileList || []);
+  dropZone.classList.remove('drag');
+  if (!files.length) return;
+  try {
+    for (const file of files) {
+      say(`Uploading ${file.name}...`);
+      await uploadFile(file);
+    }
+    await load();
+    say(`Uploaded ${files.length} file(s)`);
+  } catch (error) {
+    say(`Upload failed: ${error.message}`);
+  }
+}
+
+document.addEventListener('dragover', event => {
+  event.preventDefault();
+  dropZone.classList.add('drag');
+});
+document.addEventListener('dragleave', event => {
+  if (!event.relatedTarget) dropZone.classList.remove('drag');
+});
+document.addEventListener('drop', event => {
+  event.preventDefault();
+  uploadDroppedFiles(event.dataTransfer.files);
+});
+
+load().catch(error => say(`Load failed: ${error.message}`));
+</script>
+</body>
+</html>

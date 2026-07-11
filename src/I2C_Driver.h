@@ -1,5 +1,7 @@
 #pragma once
-#include <Wire.h>
+
+#include <stdbool.h>
+#include <stdint.h>
 
 #define I2C_SCL_PIN       7
 #define I2C_SDA_PIN       15
