@@ -13,15 +13,13 @@
 #include "driver/i2s_common.h"
 #include "driver/i2s_pdm.h"
 #include "driver/ledc.h"
-#include "driver/rmt_encoder.h"
-#include "driver/rmt_tx.h"
 #include "esp_attr.h"
 #include "esp_err.h"
-#include "esp_private/rmt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 // #include "soc/ledc_struct.h" // Direct register timing experiments.
 #include "app_settings.h"
+#include "snd_rmt.h"
 
 extern "C" {
 #include "tme/snd.h"
@@ -39,16 +37,6 @@ constexpr int AUDIO_TIMER_HZ = 40000000;
 // than a nominal 22.05 kHz audio rate.
 constexpr int AUDIO_MAC_CPU_HZ = 7833600;
 constexpr int AUDIO_MAC_LINE_CYCLES = 352;
-// Use a higher RMT resolution and convert all Mac cycles through the actual
-// channel clock. Event positions and frame duration therefore remain correct
-// when the resolution changes.
-constexpr int AUDIO_RMT_REQUESTED_RESOLUTION_HZ = 40000000;
-constexpr int AUDIO_RMT_MEM_BLOCK_SYMBOLS = 512;
-// One frame can be filled by the emulator while the stream encoder drains the
-// other. The RMT driver already owns the separate DMA ping-pong staging area.
-constexpr int AUDIO_RMT_PAYLOAD_BUFFERS = 3;
-constexpr int AUDIO_RMT_STREAM_PREFILL_FRAMES = AUDIO_RMT_PAYLOAD_BUFFERS;
-constexpr int AUDIO_RMT_MAX_SYMBOLS_PER_FRAME = 512;
 constexpr int AUDIO_SAMPLE_RATE =
     // round(AUDIO_MAC_CPU_HZ / AUDIO_MAC_LINE_CYCLES) = 22,255 Hz
     (AUDIO_MAC_CPU_HZ + (AUDIO_MAC_LINE_CYCLES / 2)) / AUDIO_MAC_LINE_CYCLES;
@@ -68,33 +56,14 @@ static uint8_t audioRing[AUDIO_RINGBUF_SAMPLES];
 static volatile uint32_t audioRingHead = 0;
 static volatile uint32_t audioRingTail = 0;
 static volatile bool audioSpaceSignaled = false;
+static uint8_t pwmLastDuty = 0xFF;
 static gptimer_handle_t audioTimer = nullptr;
 static TaskHandle_t audioProducerTask = nullptr;
 // static decltype(&LEDC.channel_group[LEDC_LOW_SPEED_MODE].channel[LEDC_CHANNEL_0]) audioLedcChannel = nullptr;
 
-typedef struct {
-    rmt_symbol_word_t symbols[AUDIO_RMT_MAX_SYMBOLS_PER_FRAME];
-    size_t symbolCount;
-    volatile bool busy;
-} AudioRmtPayloadBuffer;
-
 static uint8_t pcmFrameBuffer[AUDIO_FRAME_SAMPLES];
 static int16_t pdmFrameBuffer[AUDIO_FRAME_SAMPLES];
 static i2s_chan_handle_t pdmTxChannel = nullptr;
-static rmt_channel_handle_t rmtTxChannel = nullptr;
-static rmt_encoder_handle_t rmtStreamEncoder = nullptr;
-static uint8_t rmtStreamToken = 0;
-static AudioRmtPayloadBuffer rmtPayloadBuffers[AUDIO_RMT_PAYLOAD_BUFFERS];
-static volatile uint8_t rmtPendingBufferIndexes[AUDIO_RMT_PAYLOAD_BUFFERS];
-static volatile uint32_t rmtPendingHead = 0;
-static volatile uint32_t rmtPendingTail = 0;
-static int rmtStreamBufferIndex = -1;
-static size_t rmtStreamSymbolOffset = 0;
-static bool rmtStreamStarted = false;
-static uint32_t rmtResolutionHz = AUDIO_RMT_REQUESTED_RESOLUTION_HZ;
-static uint16_t maxEventsSeen = 0;
-static size_t maxRmtSymbols = 0;
-static uint32_t rmtQueueWaits = 0;
 
 static const int32_t AUDIO_VOLUME_LUT[8] = {
     0,      /* vol 0: mute */
@@ -181,6 +150,7 @@ static int16_t audioApplyVolumeInt16t(uint8_t sample, int volume) {
     return (int16_t)scaled;
 }
 
+#if 0 // Legacy monolithic RMT implementation; replaced by snd_rmt.cpp.
 // -----------------------------------------------------------------------------
 // RMT stream callbacks (declared before channel initialization)
 // -----------------------------------------------------------------------------
@@ -261,8 +231,13 @@ static size_t IRAM_ATTR audioRmtStreamEncode(const void *data,
 // -----------------------------------------------------------------------------
 // PWM backend
 // -----------------------------------------------------------------------------
+#endif
 
 static inline void IRAM_ATTR audioSetDuty(uint8_t duty) {
+    if (duty == pwmLastDuty) {
+        return;
+    }
+    pwmLastDuty = duty;
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 
@@ -511,6 +486,7 @@ static bool audioWritePdmFrame(const uint8_t *rawSamples,
     return true;
 }
 
+#if 0 // Legacy monolithic RMT implementation; replaced by snd_rmt.cpp.
 // -----------------------------------------------------------------------------
 // RMT backend initialization, timing conversion, and edge-to-symbol encoding
 // -----------------------------------------------------------------------------
@@ -840,6 +816,7 @@ static bool audioWriteRmtFrame(const uint8_t *rawSamples,
     }
     return audioRmtSubmitPayload(payload);
 }
+#endif
 
 // -----------------------------------------------------------------------------
 // Public backend initialization and frame dispatch
@@ -850,18 +827,8 @@ void sndInit(void) {
     activeBackend = appAudioBackend();
 
     if (activeBackend == AUDIO_BACKEND_RMT) {
-        esp_err_t err = audioInitRmt();
+        esp_err_t err = audioRmtInit();
         if (err == ESP_OK) {
-            uint32_t frameTicks = audioRmtFrameCycleToTick(AUDIO_FRAME_SAMPLES, 0);
-            printf("AUDIO: backend RMT continuous DMA stream on GPIO%d, requested %d Hz, real %u Hz, %d ticks/line, %u ticks/frame, %d DMA-memory symbols, %d software frames, %d symbols/frame\n",
-                AUDIO_GPIO,
-                AUDIO_RMT_REQUESTED_RESOLUTION_HZ,
-                (unsigned)rmtResolutionHz,
-                (unsigned)audioRmtFrameCycleToTick(1, 0),
-                (unsigned)frameTicks,
-                AUDIO_RMT_MEM_BLOCK_SYMBOLS,
-                AUDIO_RMT_PAYLOAD_BUFFERS,
-                AUDIO_RMT_MAX_SYMBOLS_PER_FRAME);
             audioStarted = true;
             return;
         }
@@ -947,11 +914,8 @@ bool sndPushMacFrame(const uint8_t *rawSamples,
                                   eventCount);
     }
     if (activeBackend == AUDIO_BACKEND_RMT) {
-        return audioWriteRmtFrame(rawSamples,
-                                  volume,
-                                  frameStartGateEnabled,
-                                  events,
-                                  eventCount);
+        return audioRmtWriteFrame(rawSamples, volume, frameStartGateEnabled,
+                                  events, eventCount);
     }
     return false;
 }

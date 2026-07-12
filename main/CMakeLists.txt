@@ -6,9 +6,9 @@ option(ESP32_MAC_CACHE_ALIGN_BRANCHES "Also align jumps and loops; disabled by d
 idf_component_register(
     SRCS
         "../src/main.cpp"
-        "../vendor_drivers/I2C_Driver.cpp"
-        "../vendor_drivers/TCA9554PWR.cpp"
-        "../vendor_drivers/Display_ST7701.cpp"
+        "../src/I2C_Driver.cpp"
+        "../src/TCA9554PWR.cpp"
+        "../src/Display_ST7701.cpp"
         "../src/disp.cpp"
         "../src/ble_input.cpp"
         "../src/input_host.cpp"
@@ -25,6 +25,7 @@ idf_component_register(
         "../src/net_time.cpp"
         "../src/http_server.cpp"
         "../src/snd.cpp"
+        "../src/snd_rmt.cpp"
         "../src/third_party/qrcode/qrcodegen.c"
         "../src/tme/emu.c"
         "../src/tme/emu_monitor.c"

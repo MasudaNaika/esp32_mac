@@ -1,6 +1,11 @@
 .pio
 .vscode
 .claude
+build
+managed_components
+sdkconfig
+sdkconfig.old
+dependencies.lock
 *.rom
 *.img
 *.dsk
