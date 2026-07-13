@@ -257,7 +257,10 @@ int16_t handlePrime(uint32_t parameterBlock, uint32_t dce) {
         return finish(kOfflineErr);
     }
 
-    uint32_t buffer = read32(parameterBlock + kIoBuffer);
+    // The Plus ROM runs with 24-bit addressing.  The high byte of an
+    // IOBuffer pointer can contain address-space/flag bits; the MMU exposes
+    // guest RAM in the low 24-bit address range.
+    uint32_t buffer = read32(parameterBlock + kIoBuffer) & 0x00FFFFFFu;
     uint32_t length = read32(parameterBlock + kIoReqCount);
     uint32_t position = read32(dce + kDcePosition);
     if ((length & 0x1FFu) != 0 || (position & 0x1FFu) != 0 ||
