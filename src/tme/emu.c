@@ -92,6 +92,7 @@ static bool emuSccIrqPending;
 static bool emuCpuReady;
 static volatile bool emuStopRequested;
 static volatile bool emuStopped = true;
+static volatile bool emuRunning;
 static uint8_t emuSoundRawFrame[EMU_SOUND_FRAME_SAMPLES];
 static SndGateEvent emuSoundGateEvents[SND_GATE_MAX_EVENTS];
 static uint16_t emuSoundGateEventCount;
@@ -242,6 +243,7 @@ void tmeStartEmu(void *rom, const char *hdImagePaths[SCSI_TARGET_COUNT],
 	// Build the machine, then keep feeding CPU time, VBL, display, and audio forever.
 	emuStopRequested = false;
 	emuStopped = false;
+	emuRunning = true;
 	logEmuHeap("tmeStartEmu entry");
 	macRom=(unsigned char*)rom;
 	ramInit();
@@ -314,6 +316,12 @@ void tmeStartEmu(void *rom, const char *hdImagePaths[SCSI_TARGET_COUNT],
 	int frame = 0, speedFrame = 0, slice = 0;
 
 	while(!emuStopRequested) {
+		if (!emuRunning) {
+			sndSetEnabled(false);
+			vTaskDelay(pdMS_TO_TICKS(10));
+			continue;
+		}
+		sndSetEnabled(true);
 		// Image files are opened only on the emulator task, between guest slices.
 		pvFddProcessRequests();
 
@@ -402,6 +410,8 @@ void tmeStartEmu(void *rom, const char *hdImagePaths[SCSI_TARGET_COUNT],
 
 	}
 	emuCpuReady = false;
+	emuRunning = false;
+	sndSetEnabled(false);
 	pvFddShutdown();
 	hdShutdownAll();
 	emuStopped = true;
@@ -409,11 +419,21 @@ void tmeStartEmu(void *rom, const char *hdImagePaths[SCSI_TARGET_COUNT],
 }
 
 void tmeRequestStop(void) {
-	emuStopRequested = true;
+	emuRunning = false;
+}
+
+void tmeRequestRun(void) {
+	if (!emuStopped) {
+		emuRunning = true;
+	}
 }
 
 bool tmeEmuStopped(void) {
-	return emuStopped;
+	return emuStopped || !emuRunning;
+}
+
+bool tmeEmuRunning(void) {
+	return !emuStopped && emuRunning;
 }
 
 void viaIrq(int req) {
@@ -439,6 +459,39 @@ void viaCbPortAWrite(unsigned int val) {
 	mmuSetRomRemap(rom_remap);
 }
 
+static void recordSoundGateEvent(uint16_t line, uint16_t cycle, uint8_t state) {
+	/*
+	 * Several VIA writes can land on the same emulated cycle.  Such writes
+	 * cannot create a non-zero-width output interval, so keep only their final
+	 * state.  If that final state is the state before the group started, the
+	 * whole group cancels out and no event needs to reach the audio backend.
+	 */
+	if (emuSoundGateEventCount > 0) {
+		SndGateEvent *last = &emuSoundGateEvents[emuSoundGateEventCount - 1];
+		if (last->line == line && last->cycle == cycle) {
+			last->state = state;
+			if ((emuSoundGateEventCount == 1 &&
+			     emuSoundFrameStartGateEnabled == (state == SND_GATE_ENABLE)) ||
+			    (emuSoundGateEventCount > 1 &&
+			     emuSoundGateEvents[emuSoundGateEventCount - 2].state == state)) {
+				--emuSoundGateEventCount;
+			}
+			return;
+		}
+	}
+
+	if (emuSoundGateEventCount < SND_GATE_MAX_EVENTS) {
+		SndGateEvent *event = &emuSoundGateEvents[emuSoundGateEventCount++];
+		event->line = line;
+		event->cycle = cycle;
+		event->state = state;
+	} else {
+		// Do not overwrite earlier edges; report that this frame could
+		// not represent every transition.
+		++emuSoundGateOverflowFrames;
+	}
+}
+
 void viaCbPortBWrite(unsigned int val) {
 
 	bool prev_audio_en = audio_en;
@@ -457,17 +510,10 @@ void viaCbPortBWrite(unsigned int val) {
 		// previous slice's overrun correction so the event remains on the
 		// Macintosh's continuous 352-cycle scanline timeline.
 		int sliceCycle = m68k_cycles_run() + surpassCycles;
-		if (emuSoundGateEventCount < SND_GATE_MAX_EVENTS) {
-			SndGateEvent *event = &emuSoundGateEvents[emuSoundGateEventCount++];
-			// Convert the absolute cycle within this frame to line/cycle
-			// coordinates used by the audio backends.
-			event->line = scanline_start + sliceCycle / EMU_MAC_SCANLINE_CYCLES;
-			event->cycle = sliceCycle % EMU_MAC_SCANLINE_CYCLES;
-			event->state = audio_en ? SND_GATE_ENABLE : SND_GATE_DISABLE;
-		} else {
-			// Do not overwrite earlier edges; report that this frame could
-			// not represent every transition.
-			++emuSoundGateOverflowFrames;
-		}
+		// Convert the absolute cycle within this frame to line/cycle
+		// coordinates used by the audio backends.
+		recordSoundGateEvent(scanline_start + sliceCycle / EMU_MAC_SCANLINE_CYCLES,
+		                     sliceCycle % EMU_MAC_SCANLINE_CYCLES,
+		                     audio_en ? SND_GATE_ENABLE : SND_GATE_DISABLE);
 	}
 }

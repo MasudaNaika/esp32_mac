@@ -179,7 +179,7 @@ bool appParseAudioBackend(const char *value, AudioBackend *backend) {
         *backend = AUDIO_BACKEND_PWM;
         return true;
     }
-    if (strcasecmp(value, "pdm") == 0 || strcasecmp(value, "i2s_pdm") == 0) {
+    if (strcasecmp(value, "pdm") == 0) {
         *backend = AUDIO_BACKEND_PDM;
         return true;
     }

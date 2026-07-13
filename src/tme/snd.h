@@ -24,6 +24,8 @@ typedef struct {
 
 // Initialize the selected audio backend and local queue bookkeeping.
 void sndInit();
+// Enable or mute the physical audio output without changing guest state.
+void sndSetEnabled(bool enabled);
 
 // Submit one raw 370-byte Mac sound frame plus the /SNDRES gate transitions.
 bool sndPushMacFrame(const uint8_t *rawSamples,

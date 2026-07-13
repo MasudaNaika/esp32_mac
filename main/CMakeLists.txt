@@ -19,6 +19,7 @@ idf_component_register(
         "../src/storage_backend.cpp"
         "../src/console_shell.cpp"
         "../src/console_log.cpp"
+        "../src/screenshot.cpp"
         "../src/pv_fdd.cpp"
         "../src/pv_sony_driver.cpp"
         "../src/hd.cpp"

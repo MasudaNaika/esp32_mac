@@ -18,6 +18,8 @@ typedef enum {
 void vmuInit(void);
 void vmuAttachMmu(void);
 uint8_t *vmuGetFrontBuffer(void);
+// Return the persistent PSRAM capture area after copying the displayed surface.
+uint8_t *vmuCaptureFrontBuffer(void);
 uint8_t *vmuGetMappedBuffer(VmuSurface surface);
 void vmuSelectMacSurface(VmuSurface surface);
 void vmuShowConsole(void);

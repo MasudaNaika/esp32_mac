@@ -21,6 +21,7 @@ pre{height:100%;min-height:0;white-space:pre-wrap;overflow:auto;border:1px solid
 .commandPane{border-top:1px solid #34383d;padding-top:8px}
 .quick{display:flex;flex-wrap:wrap;gap:8px;margin:0}
 .quick button{padding:8px 10px}
+.emuToggle{min-width:92px}
 #streamStatus{color:#aab3bd}
 </style>
 </head>
@@ -39,16 +40,18 @@ pre{height:100%;min-height:0;white-space:pre-wrap;overflow:auto;border:1px solid
       <button data-cmd="status">status</button>
       <button data-cmd="console">console</button>
       <button data-cmd="emu">emu</button>
+      <button data-cmd="ss">screen shot</button>
       <button data-toggle="log">log --</button>
       <button data-toggle="perf">perf --</button>
       <button data-toggle="cpu">cpu --</button>
       <button data-toggle="turbo">turbo --</button>
+      <button class="emuToggle" id="emuToggle">emu --</button>
       <button data-cmd="reboot">reboot</button>
       <button data-cmd="help">help</button>
     </div>
     <form id="commandForm">
       <input id="command" autocomplete="off" autofocus placeholder="status">
-      <button type="submit">Run</button>
+      <button type="submit">Send</button>
     </form>
   </div>
 </main>
@@ -59,6 +62,7 @@ const log = document.getElementById('log');
 const streamStatus = document.getElementById('streamStatus');
 const maxLogChars = 40000;
 const toggleState = { log: null, perf: null, cpu: null, turbo: null };
+let emuRunning = null;
 
 function updateToggleButtons() {
   document.querySelectorAll('[data-toggle]').forEach(button => {
@@ -70,12 +74,16 @@ function updateToggleButtons() {
 }
 
 function updateStatusState(text) {
-  const match = text.match(/STATUS: .*?\blog=(on|off)\b.*?\bperf=(on|off)\b.*?\bcpu=(on|off)\b.*?\bturbo=(on|off)\b/);
+  const match = text.match(/STATUS: .*?\bemu=(run|stop)\b.*?\blog=(on|off)\b.*?\bperf=(on|off)\b.*?\bcpu=(on|off)\b.*?\bturbo=(on|off)\b/);
   if (!match) return;
-  toggleState.log = match[1] === 'on';
-  toggleState.perf = match[2] === 'on';
-  toggleState.cpu = match[3] === 'on';
-  toggleState.turbo = match[4] === 'on';
+  emuRunning = match[1] === 'run';
+  toggleState.log = match[2] === 'on';
+  toggleState.perf = match[3] === 'on';
+  toggleState.cpu = match[4] === 'on';
+  toggleState.turbo = match[5] === 'on';
+  const emuButton = document.getElementById('emuToggle');
+  emuButton.textContent = emuRunning ? 'emu stop' : 'emu run';
+  emuButton.classList.toggle('active', emuRunning === true);
   updateToggleButtons();
 }
 
@@ -101,7 +109,7 @@ async function runCommand(command) {
     const text = await res.text();
     appendLog(`${text}\n`);
     updateStatusState(text);
-    if (/^(log|perf|cpu|turbo) (on|off)$/i.test(cmd)) {
+    if (/^(run|stop)$/i.test(cmd) || /^(log|perf|cpu|turbo) (on|off)$/i.test(cmd)) {
       await refreshStatus();
     }
   } catch (error) {
@@ -133,6 +141,9 @@ document.querySelectorAll('[data-toggle]').forEach(button => {
     const next = toggleState[name] === true ? 'off' : 'on';
     runCommand(`${name} ${next}`);
   });
+});
+document.getElementById('emuToggle').addEventListener('click', () => {
+  runCommand(emuRunning === true ? 'stop' : 'run');
 });
 
 function startLogStream() {

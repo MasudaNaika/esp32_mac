@@ -26,6 +26,12 @@ extern "C" {
 }
 
 constexpr gpio_num_t AUDIO_GPIO = (gpio_num_t) 16;
+// Macintosh Plus audio is tied to the video timing rather than being an
+// independent audio-clock stream. The emulated sound buffer has one 8-bit
+// value per scanline, and the 370 scanlines are submitted at the VBL cadence.
+// The RMT backend reconstructs that hardware model: each value becomes the
+// duty position within its 352-CPU-cycle line, while VIA PB7 transitions can
+// gate the output at positions inside the same line.
 constexpr int AUDIO_FRAME_SAMPLES = 370;
 constexpr int AUDIO_RINGBUF_SAMPLES = AUDIO_FRAME_SAMPLES * 3 + 1;
 constexpr int AUDIO_PDM_DMA_DESC = 3;
@@ -48,10 +54,10 @@ constexpr int AUDIO_UPDATE_RATE = AUDIO_TIMER_HZ / AUDIO_SAMPLE_TICKS;
 constexpr int AUDIO_PWM_RATE = AUDIO_UPDATE_RATE * 4;
 constexpr ledc_timer_bit_t AUDIO_PWM_BITS = LEDC_TIMER_8_BIT;
 constexpr TickType_t AUDIO_WRITE_WAIT_TICKS = pdMS_TO_TICKS(25);
-constexpr TickType_t AUDIO_RMT_WRITE_WAIT_TICKS = pdMS_TO_TICKS(75);
 
 static AudioBackend activeBackend = AUDIO_BACKEND_PWM;
 static bool audioStarted = false;
+static volatile bool audioEnabled = true;
 static uint8_t audioRing[AUDIO_RINGBUF_SAMPLES];
 static volatile uint32_t audioRingHead = 0;
 static volatile uint32_t audioRingTail = 0;
@@ -60,7 +66,6 @@ static uint8_t pwmLastDuty = 0xFF;
 static gptimer_handle_t audioTimer = nullptr;
 static TaskHandle_t audioProducerTask = nullptr;
 // static decltype(&LEDC.channel_group[LEDC_LOW_SPEED_MODE].channel[LEDC_CHANNEL_0]) audioLedcChannel = nullptr;
-
 static uint8_t pcmFrameBuffer[AUDIO_FRAME_SAMPLES];
 static int16_t pdmFrameBuffer[AUDIO_FRAME_SAMPLES];
 static i2s_chan_handle_t pdmTxChannel = nullptr;
@@ -150,88 +155,9 @@ static int16_t audioApplyVolumeInt16t(uint8_t sample, int volume) {
     return (int16_t)scaled;
 }
 
-#if 0 // Legacy monolithic RMT implementation; replaced by snd_rmt.cpp.
-// -----------------------------------------------------------------------------
-// RMT stream callbacks (declared before channel initialization)
-// -----------------------------------------------------------------------------
-static inline uint32_t IRAM_ATTR audioRmtAbsoluteCycleToTick(uint64_t frameCycle) {
-    return (uint32_t)((frameCycle * rmtResolutionHz + (AUDIO_MAC_CPU_HZ / 2)) /
-                      AUDIO_MAC_CPU_HZ);
-}
-
-static void IRAM_ATTR audioRmtSignalPayloadFree(uint8_t bufferIndex) {
-    __atomic_store_n(&rmtPayloadBuffers[bufferIndex].busy, false, __ATOMIC_RELEASE);
-    if (!audioProducerTask) {
-        return;
-    }
-    if (xPortInIsrContext()) {
-        BaseType_t taskWoken = pdFALSE;
-        audioWakeProducerFromIsr(&taskWoken);
-        if (taskWoken == pdTRUE) {
-            portYIELD_FROM_ISR();
-        }
-    } else {
-        audioWakeProducer();
-    }
-}
-
-static size_t IRAM_ATTR audioRmtStreamEncode(const void *data,
-                                             size_t dataSize,
-                                             size_t symbolsWritten,
-                                             size_t symbolsFree,
-                                             rmt_symbol_word_t *symbols,
-                                             bool *done,
-                                             void *arg) {
-    (void)data;
-    (void)dataSize;
-    (void)symbolsWritten;
-    (void)arg;
-    *done = false;
-
-    size_t written = 0;
-    while (written < symbolsFree) {
-        if (rmtStreamBufferIndex < 0) {
-            uint32_t tail = __atomic_load_n(&rmtPendingTail, __ATOMIC_RELAXED);
-            uint32_t head = __atomic_load_n(&rmtPendingHead, __ATOMIC_ACQUIRE);
-            if (tail == head) {
-                // Keep the PCM midpoint (sample 128) while the producer is
-                // late.  Driving the pin low for the whole gap creates a
-                // large step from the active PWM waveform and can be heard
-                // as a click when the stream resumes.
-                rmt_symbol_word_t neutral = {};
-                uint32_t lineTicks = audioRmtAbsoluteCycleToTick(AUDIO_MAC_LINE_CYCLES);
-                neutral.duration0 = lineTicks >> 1;
-                neutral.level0 = 0;
-                neutral.duration1 = lineTicks - neutral.duration0;
-                neutral.level1 = 1;
-                while (written < symbolsFree) {
-                    symbols[written++] = neutral;
-                }
-                break;
-            }
-            rmtStreamBufferIndex = rmtPendingBufferIndexes[tail % AUDIO_RMT_PAYLOAD_BUFFERS];
-            rmtStreamSymbolOffset = 0;
-            __atomic_store_n(&rmtPendingTail, tail + 1, __ATOMIC_RELEASE);
-        }
-
-        AudioRmtPayloadBuffer *payload = &rmtPayloadBuffers[rmtStreamBufferIndex];
-        while (written < symbolsFree && rmtStreamSymbolOffset < payload->symbolCount) {
-            symbols[written++] = payload->symbols[rmtStreamSymbolOffset++];
-        }
-        if (rmtStreamSymbolOffset == payload->symbolCount) {
-            uint8_t completedIndex = (uint8_t)rmtStreamBufferIndex;
-            rmtStreamBufferIndex = -1;
-            rmtStreamSymbolOffset = 0;
-            audioRmtSignalPayloadFree(completedIndex);
-        }
-    }
-    return written;
-}
-
 // -----------------------------------------------------------------------------
 // PWM backend
 // -----------------------------------------------------------------------------
-#endif
 
 static inline void IRAM_ATTR audioSetDuty(uint8_t duty) {
     if (duty == pwmLastDuty) {
@@ -255,7 +181,9 @@ static bool IRAM_ATTR audioTimerAlarm(gptimer_handle_t timer,
     (void)userCtx;
 
     uint8_t sample;
-    if (audioRingRead(&sample)) {
+    if (!audioEnabled) {
+        audioSetDuty(0);
+    } else if (audioRingRead(&sample)) {
         audioSetDuty(sample);
     }
 
@@ -357,20 +285,59 @@ static void audioRingWriteFrame(const uint8_t *data) {
     audioRingHead = head;
 }
 
-// Shared scanline gate reconstruction used by PWM and PDM.
-static inline bool isFrameEnabled(uint16_t line,
-                                  bool *gateEnabled,
-                                  const SndGateEvent *events,
-                                  uint16_t eventCount,
-                                  uint16_t *eventIndex) {
-    // PWM/PDM have one output value per scanline. Fold all edge events up to
-    // this line into the same gate state that RMT applies at cycle precision.
-    // The last edge on a line wins, preserving event order for rapid toggles.
-    while (*eventIndex < eventCount && events[*eventIndex].line <= line) {
+// Apply PB7 gating to one of the 370 PCM values. The raw value describes a
+// high pulse inside this line: its high interval starts at lowCycles and ends
+// at cycle 352. Only the part of that high interval covered by PB7 ON remains
+// in the result; an OFF transition during the line therefore subtracts only
+// the overlapping duty, not the whole PCM amplitude.
+static uint8_t audioApplyGateToPcmSample(uint8_t sample,
+                                         uint16_t line,
+                                         bool *gateEnabled,
+                                         const SndGateEvent *events,
+                                         uint16_t eventCount,
+                                         uint16_t *eventIndex) {
+    const uint16_t boundedEventCount = eventCount > SND_GATE_MAX_EVENTS
+        ? SND_GATE_MAX_EVENTS : eventCount;
+
+    // Most lines have no PB7 transition. In that common case the gate state
+    // is constant for the whole line, so avoid recomputing the PCM high run.
+    while (*eventIndex < boundedEventCount && events[*eventIndex].line < line) {
         *gateEnabled = events[*eventIndex].state == SND_GATE_ENABLE;
         ++(*eventIndex);
     }
-    return *gateEnabled;
+    if (*eventIndex >= boundedEventCount || events[*eventIndex].line > line) {
+        return *gateEnabled ? sample : 0;
+    }
+
+    const uint16_t lowCycles = (uint16_t)(((uint32_t)(0xFF - sample) *
+                                           AUDIO_MAC_LINE_CYCLES + 127) / 0xFF);
+    uint16_t cycle = 0;
+    uint16_t enabledHighCycles = 0;
+
+    while (cycle < AUDIO_MAC_LINE_CYCLES) {
+        uint16_t nextCycle = AUDIO_MAC_LINE_CYCLES;
+        if (*eventIndex < boundedEventCount && events[*eventIndex].line == line) {
+            nextCycle = events[*eventIndex].cycle > AUDIO_MAC_LINE_CYCLES
+                ? AUDIO_MAC_LINE_CYCLES : events[*eventIndex].cycle;
+            if (nextCycle < cycle) nextCycle = cycle;
+        }
+        if (*gateEnabled && nextCycle > lowCycles && nextCycle > cycle) {
+            uint16_t highStart = cycle > lowCycles ? cycle : lowCycles;
+            if (nextCycle > highStart) {
+                enabledHighCycles += nextCycle - highStart;
+            }
+        }
+        cycle = nextCycle;
+        while (*eventIndex < boundedEventCount &&
+               events[*eventIndex].line == line &&
+               events[*eventIndex].cycle <= cycle) {
+            *gateEnabled = events[*eventIndex].state == SND_GATE_ENABLE;
+            ++(*eventIndex);
+        }
+    }
+
+    return (uint8_t)((enabledHighCycles * 255U + AUDIO_MAC_LINE_CYCLES / 2) /
+                     AUDIO_MAC_LINE_CYCLES);
 }
 
 // -----------------------------------------------------------------------------
@@ -381,16 +348,16 @@ static bool audioWritePwmFrame(const uint8_t *rawSamples,
                                bool frameStartGateEnabled,
                                const SndGateEvent *events,
                                uint16_t eventCount) {
-
     bool gateEnabled = frameStartGateEnabled;
     uint16_t eventIndex = 0;
     for (uint16_t i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
-        int vol = isFrameEnabled(i,
-                                 &gateEnabled,
-                                 events,
-                                 eventCount,
-                                 &eventIndex) ? volume : -1;
-        pcmFrameBuffer[i] = audioApplyVolumeUint8t(rawSamples[i], vol);
+        uint8_t gatedSample = audioApplyGateToPcmSample(rawSamples[i],
+                                                         i,
+                                                         &gateEnabled,
+                                                         events,
+                                                         eventCount,
+                                                         &eventIndex);
+        pcmFrameBuffer[i] = audioApplyVolumeUint8t(gatedSample, volume);
     }
 
     audioSpaceSignaled = false;
@@ -458,16 +425,16 @@ static bool audioWritePdmFrame(const uint8_t *rawSamples,
                                bool frameStartGateEnabled,
                                const SndGateEvent *events,
                                uint16_t eventCount) {
-
     bool gateEnabled = frameStartGateEnabled;
     uint16_t eventIndex = 0;
     for (uint16_t i = 0; i < AUDIO_FRAME_SAMPLES; ++i) {
-        int vol = isFrameEnabled(i,
-                                 &gateEnabled,
-                                 events,
-                                 eventCount,
-                                 &eventIndex) ? volume : -1;
-        pdmFrameBuffer[i] = audioApplyVolumeInt16t(rawSamples[i], vol);
+        uint8_t gatedSample = audioApplyGateToPcmSample(rawSamples[i],
+                                                         i,
+                                                         &gateEnabled,
+                                                         events,
+                                                         eventCount,
+                                                         &eventIndex);
+        pdmFrameBuffer[i] = audioApplyVolumeInt16t(gatedSample, volume);
     }
 
     size_t bytesWritten = 0;
@@ -485,338 +452,6 @@ static bool audioWritePdmFrame(const uint8_t *rawSamples,
     }
     return true;
 }
-
-#if 0 // Legacy monolithic RMT implementation; replaced by snd_rmt.cpp.
-// -----------------------------------------------------------------------------
-// RMT backend initialization, timing conversion, and edge-to-symbol encoding
-// -----------------------------------------------------------------------------
-
-static esp_err_t audioInitRmt(void) {
-    rmt_tx_channel_config_t channelCfg = {};
-    channelCfg.gpio_num = AUDIO_GPIO;
-    channelCfg.clk_src = RMT_CLK_SRC_DEFAULT;
-    channelCfg.resolution_hz = AUDIO_RMT_REQUESTED_RESOLUTION_HZ;
-    channelCfg.mem_block_symbols = AUDIO_RMT_MEM_BLOCK_SYMBOLS;
-    channelCfg.trans_queue_depth = 1;
-    channelCfg.flags.with_dma = true;
-    channelCfg.flags.init_level = 0;
-
-    esp_err_t err = rmt_new_tx_channel(&channelCfg, &rmtTxChannel);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    rmt_simple_encoder_config_t encoderCfg = {};
-    encoderCfg.callback = audioRmtStreamEncode;
-    encoderCfg.min_chunk_size = 1;
-    err = rmt_new_simple_encoder(&encoderCfg, &rmtStreamEncoder);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    uint32_t realResolution = 0;
-    err = rmt_get_channel_resolution(rmtTxChannel, &realResolution);
-    if (err == ESP_OK && realResolution > 0) {
-        rmtResolutionHz = realResolution;
-    } else {
-        rmtResolutionHz = AUDIO_RMT_REQUESTED_RESOLUTION_HZ;
-    }
-    return rmt_enable(rmtTxChannel);
-}
-
-static uint32_t audioRmtFrameCycleToTick(uint16_t line, uint16_t cycle) {
-    if (line >= AUDIO_FRAME_SAMPLES) {
-        line = AUDIO_FRAME_SAMPLES;
-        cycle = 0;
-    } else if (cycle > AUDIO_MAC_LINE_CYCLES) {
-        cycle = AUDIO_MAC_LINE_CYCLES;
-    }
-
-    uint64_t frameCycle = (uint32_t)line * AUDIO_MAC_LINE_CYCLES + cycle;
-    return audioRmtAbsoluteCycleToTick(frameCycle);
-}
-
-static bool audioRmtAppendRun(AudioRmtPayloadBuffer *payload, uint8_t level, uint32_t ticks) {
-    if (ticks == 0) {
-        return true;
-    }
-    while (ticks > 0) {
-        uint16_t chunkTicks = ticks > 0x7FFF ? 0x7FFF : (uint16_t)ticks;
-        if (payload->symbolCount > 0) {
-            rmt_symbol_word_t *last = &payload->symbols[payload->symbolCount - 1];
-            if (last->duration1 > 0) {
-                if (last->level1 == level && last->duration1 + chunkTicks <= 0x7FFF) {
-                    last->duration1 += chunkTicks;
-                    ticks -= chunkTicks;
-                    continue;
-                }
-            } else if (last->level0 == level && last->duration0 + chunkTicks <= 0x7FFF) {
-                last->duration0 += chunkTicks;
-                ticks -= chunkTicks;
-                continue;
-            } else {
-                last->level1 = level;
-                last->duration1 = chunkTicks;
-                ticks -= chunkTicks;
-                continue;
-            }
-        }
-
-        if (payload->symbolCount >= AUDIO_RMT_MAX_SYMBOLS_PER_FRAME) {
-            return false;
-        }
-        rmt_symbol_word_t *symbol = &payload->symbols[payload->symbolCount++];
-        symbol->level0 = level;
-        symbol->duration0 = chunkTicks;
-        symbol->level1 = level;
-        symbol->duration1 = 0;
-        ticks -= chunkTicks;
-    }
-    return true;
-}
-
-static bool audioRmtEmitEnabledTicks(AudioRmtPayloadBuffer *payload,
-                                     uint16_t line,
-                                     uint8_t sample,
-                                     uint16_t startCycle,
-                                     uint16_t endCycle,
-                                     uint32_t startTick,
-                                     uint32_t endTick) {
-    if (sample == 0xFF) {
-        return endTick > startTick ? audioRmtAppendRun(payload, 1, endTick - startTick) : true;
-    }
-
-    // Mac sound samples are unsigned PCM: 128 is the neutral midpoint,
-    // matching the 50% carrier duty used by PWM/PDM. Scale the 8-bit sample
-    // to the complete 352-cycle scanline instead of using 255 as the period.
-    uint16_t lowCycles = (uint16_t)(((uint32_t)(0xFF - sample) *
-                                     AUDIO_MAC_LINE_CYCLES + 127) / 0xFF);
-    if (endCycle <= lowCycles) {
-        return endTick > startTick ? audioRmtAppendRun(payload, 0, endTick - startTick) : true;
-    }
-    if (startCycle >= lowCycles) {
-        return endTick > startTick ? audioRmtAppendRun(payload, 1, endTick - startTick) : true;
-    }
-
-    uint32_t lowTick = audioRmtFrameCycleToTick(line, lowCycles);
-    return (lowTick > startTick ? audioRmtAppendRun(payload, 0, lowTick - startTick) : true) &&
-        (endTick > lowTick ? audioRmtAppendRun(payload, 1, endTick - lowTick) : true);
-}
-
-static bool audioRmtRenderLine(AudioRmtPayloadBuffer *payload,
-                               const uint8_t *rawSamples,
-                               int volume,
-                               const SndGateEvent *events,
-                               uint16_t eventCount,
-                               uint16_t line,
-                               uint16_t *eventIndex,
-                               bool *gateEnabled,
-                               uint32_t lineStartTick,
-                               uint32_t lineEndTick) {
-    uint16_t cycle = 0;
-    uint32_t startTick = lineStartTick;
-    while (cycle < AUDIO_MAC_LINE_CYCLES) {
-        uint16_t nextCycle = AUDIO_MAC_LINE_CYCLES;
-        if (*eventIndex < eventCount && events[*eventIndex].line == line) {
-            nextCycle = events[*eventIndex].cycle;
-            if (nextCycle > AUDIO_MAC_LINE_CYCLES) {
-                nextCycle = AUDIO_MAC_LINE_CYCLES;
-            }
-            if (nextCycle < cycle) {
-                nextCycle = cycle;
-            }
-        }
-
-        uint32_t endTick = nextCycle == AUDIO_MAC_LINE_CYCLES
-            ? lineEndTick
-            : audioRmtFrameCycleToTick(line, nextCycle);
-        bool ok = true;
-        if (volume == 0 || !*gateEnabled) {
-            ok = endTick > startTick ? audioRmtAppendRun(payload, 0, endTick - startTick) : true;
-        } else {
-            ok = audioRmtEmitEnabledTicks(payload,
-                                          line,
-                                          rawSamples[line],
-                                          cycle,
-                                          nextCycle,
-                                          startTick,
-                                          endTick);
-        }
-        if (!ok) {
-            return false;
-        }
-
-        cycle = nextCycle;
-        startTick = endTick;
-        while (*eventIndex < eventCount &&
-               events[*eventIndex].line == line &&
-               events[*eventIndex].cycle <= cycle) {
-            *gateEnabled = events[*eventIndex].state == SND_GATE_ENABLE;
-            ++(*eventIndex);
-        }
-    }
-    return true;
-}
-
-// RMT payload ownership and continuous stream submission.
-static AudioRmtPayloadBuffer *audioRmtFindFreePayload(void) {
-    for (uint8_t i = 0; i < AUDIO_RMT_PAYLOAD_BUFFERS; ++i) {
-        if (!__atomic_load_n(&rmtPayloadBuffers[i].busy, __ATOMIC_ACQUIRE)) {
-            bool expected = false;
-            if (__atomic_compare_exchange_n(&rmtPayloadBuffers[i].busy,
-                                            &expected,
-                                            true,
-                                            false,
-                                            __ATOMIC_ACQ_REL,
-                                            __ATOMIC_ACQUIRE)) {
-                rmtPayloadBuffers[i].symbolCount = 0;
-                return &rmtPayloadBuffers[i];
-            }
-        }
-    }
-    return nullptr;
-}
-
-static AudioRmtPayloadBuffer *audioRmtAcquirePayload(void) {
-    AudioRmtPayloadBuffer *payload = audioRmtFindFreePayload();
-    if (payload) {
-        return payload;
-    }
-
-    ++rmtQueueWaits;
-    if (ulTaskNotifyTake(pdTRUE, AUDIO_RMT_WRITE_WAIT_TICKS) == 0) {
-        printf("AUDIO: RMT payload wait timeout, waits=%u\n", (unsigned)rmtQueueWaits);
-        return nullptr;
-    }
-    return audioRmtFindFreePayload();
-}
-
-static void audioRmtReleasePayload(AudioRmtPayloadBuffer *payload) {
-    if (!payload) {
-        return;
-    }
-    __atomic_store_n(&payload->busy, false, __ATOMIC_RELEASE);
-}
-
-static bool audioRmtStartStream(void) {
-    rmt_transmit_config_t transmitCfg = {};
-    transmitCfg.loop_count = 0;
-    transmitCfg.flags.eot_level = 0;
-    transmitCfg.flags.queue_nonblocking = false;
-
-    rmtStreamStarted = true;
-    esp_err_t err = rmt_transmit(rmtTxChannel,
-                                 rmtStreamEncoder,
-                                 &rmtStreamToken,
-                                 sizeof(rmtStreamToken),
-                                 &transmitCfg);
-    if (err != ESP_OK) {
-        rmtStreamStarted = false;
-        printf("AUDIO: RMT continuous stream start failed, err=%s\n", esp_err_to_name(err));
-        return false;
-    }
-    return true;
-}
-
-static bool audioRmtSubmitPayload(AudioRmtPayloadBuffer *payload) {
-    if (!payload || payload->symbolCount == 0) {
-        audioRmtReleasePayload(payload);
-        return true;
-    }
-
-    // A zero duration is an RMT end marker. Complete a half-used final symbol
-    // without changing its level or total duration before joining frames.
-    rmt_symbol_word_t *last = &payload->symbols[payload->symbolCount - 1];
-    if (last->duration1 == 0) {
-        if (last->duration0 <= 1) {
-            printf("AUDIO: RMT invalid final run duration=%u\n", (unsigned)last->duration0);
-            audioRmtReleasePayload(payload);
-            return false;
-        }
-        last->duration0 -= 1;
-        last->level1 = last->level0;
-        last->duration1 = 1;
-    }
-
-    uint32_t head = __atomic_load_n(&rmtPendingHead, __ATOMIC_RELAXED);
-    uint8_t bufferIndex = (uint8_t)(payload - rmtPayloadBuffers);
-    rmtPendingBufferIndexes[head % AUDIO_RMT_PAYLOAD_BUFFERS] = bufferIndex;
-    __atomic_store_n(&rmtPendingHead, head + 1, __ATOMIC_RELEASE);
-
-    uint32_t tail = __atomic_load_n(&rmtPendingTail, __ATOMIC_ACQUIRE);
-    if (!rmtStreamStarted && (head + 1 - tail) >= AUDIO_RMT_STREAM_PREFILL_FRAMES) {
-        if (!audioRmtStartStream()) {
-            // The queued payloads remain owned by the RMT path. Do not reuse
-            // their memory after a partially attempted stream start.
-            return false;
-        }
-    }
-    return true;
-}
-
-static bool audioWriteRmtFrame(const uint8_t *rawSamples,
-                               int volume,
-                               bool frameStartGateEnabled,
-                               const SndGateEvent *events,
-                               uint16_t eventCount) {
-    bool gateEnabled = frameStartGateEnabled;
-    uint16_t eventIndex = 0;
-
-    if (eventCount > maxEventsSeen) {
-        maxEventsSeen = eventCount;
-        printf("AUDIO: RMT max gate events=%u\n", (unsigned)maxEventsSeen);
-    }
-
-    AudioRmtPayloadBuffer *payload = audioRmtAcquirePayload();
-    if (!payload) {
-        return false;
-    }
-
-    bool ok = true;
-    // Advance rounded scanline boundaries without repeating a 64-bit
-    // cycle-to-tick division for every line.  The half-denominator offset
-    // preserves the same round(frameCycle * resolution / CPU_Hz) result.
-    const uint64_t lineNumerator = (uint64_t)AUDIO_MAC_LINE_CYCLES * rmtResolutionHz;
-    const uint32_t lineTickWhole = (uint32_t)(lineNumerator / AUDIO_MAC_CPU_HZ);
-    const uint32_t lineTickRemainder = (uint32_t)(lineNumerator % AUDIO_MAC_CPU_HZ);
-    uint32_t lineTick = 0;
-    uint32_t lineRemainder = AUDIO_MAC_CPU_HZ / 2;
-    for (uint16_t line = 0; line < AUDIO_FRAME_SAMPLES; ++line) {
-        uint32_t lineStartTick = lineTick;
-        lineTick += lineTickWhole;
-        lineRemainder += lineTickRemainder;
-        if (lineRemainder >= AUDIO_MAC_CPU_HZ) {
-            lineRemainder -= AUDIO_MAC_CPU_HZ;
-            ++lineTick;
-        }
-
-        ok = audioRmtRenderLine(payload,
-                                rawSamples,
-                                volume,
-                                events,
-                                eventCount,
-                                line,
-                                &eventIndex,
-                                &gateEnabled,
-                                lineStartTick,
-                                lineTick);
-        if (!ok) {
-            audioRmtReleasePayload(payload);
-            printf("AUDIO: RMT frame payload overflow at line %u, symbols=%u/%u\n",
-                (unsigned)line,
-                (unsigned)payload->symbolCount,
-                (unsigned)AUDIO_RMT_MAX_SYMBOLS_PER_FRAME);
-            return false;
-        }
-    }
-
-    if (payload->symbolCount > maxRmtSymbols) {
-        maxRmtSymbols = payload->symbolCount;
-        printf("AUDIO: RMT max frame symbols=%u\n", (unsigned)maxRmtSymbols);
-    }
-    return audioRmtSubmitPayload(payload);
-}
-#endif
 
 // -----------------------------------------------------------------------------
 // Public backend initialization and frame dispatch
@@ -839,7 +474,7 @@ void sndInit(void) {
     if (activeBackend == AUDIO_BACKEND_PDM) {
         esp_err_t err = audioInitPdm();
         if (err == ESP_OK) {
-            printf("AUDIO: backend PDM frame-gate on GPIO%d, 16-bit PCM, %d Hz, PDM %d bits/sample\n",
+            printf("AUDIO: backend PDM per-scanline gate on GPIO%d, 16-bit PCM, %d Hz, PDM %d bits/sample\n",
                 AUDIO_GPIO, AUDIO_SAMPLE_RATE, AUDIO_PDM_BITS_PER_SAMPLE);
             audioStarted = true;
             return;
@@ -858,9 +493,33 @@ void sndInit(void) {
     }
 
     const int updateRateMilliHz = ((int64_t)AUDIO_TIMER_HZ * 1000) / AUDIO_SAMPLE_TICKS;
-    printf("AUDIO: backend PWM frame-gate on GPIO%d, 8-bit PCM, update %d.%03d Hz, carrier %d Hz\n",
+    printf("AUDIO: backend PWM per-scanline gate on GPIO%d, 8-bit PCM, update %d.%03d Hz, carrier %d Hz\n",
         AUDIO_GPIO, updateRateMilliHz / 1000, updateRateMilliHz % 1000, AUDIO_PWM_RATE);
     audioStarted = true;
+}
+
+void sndSetEnabled(bool enabled) {
+    if (audioEnabled == enabled) {
+        return;
+    }
+    audioEnabled = enabled;
+    if (!enabled) {
+        audioRingTail = audioRingHead;
+        audioSpaceSignaled = false;
+        if (activeBackend == AUDIO_BACKEND_RMT) {
+            audioRmtSetEnabled(false);
+        }
+        if (activeBackend == AUDIO_BACKEND_PWM) {
+            audioSetDuty(0);
+        }
+        if (activeBackend == AUDIO_BACKEND_PDM && pdmTxChannel) {
+            i2s_channel_disable(pdmTxChannel);
+        }
+    } else if (activeBackend == AUDIO_BACKEND_PDM && pdmTxChannel) {
+        i2s_channel_enable(pdmTxChannel);
+    } else if (activeBackend == AUDIO_BACKEND_RMT) {
+        audioRmtSetEnabled(true);
+    }
 }
 
 static bool isConstantFrame(const uint8_t *data) {
@@ -878,7 +537,7 @@ bool sndPushMacFrame(const uint8_t *rawSamples,
                      bool frameStartGateEnabled,
                      const SndGateEvent *events,
                      uint16_t eventCount) {
-    if (!audioStarted || rawSamples == nullptr) {
+    if (!audioStarted || !audioEnabled || rawSamples == nullptr) {
         return false;
     }
 
@@ -914,8 +573,11 @@ bool sndPushMacFrame(const uint8_t *rawSamples,
                                   eventCount);
     }
     if (activeBackend == AUDIO_BACKEND_RMT) {
-        return audioRmtWriteFrame(rawSamples, volume, frameStartGateEnabled,
-                                  events, eventCount);
+        return audioRmtWriteFrame(rawSamples,
+                                     volume,
+                                     frameStartGateEnabled,
+                                     events,
+                                     eventCount);
     }
     return false;
 }

@@ -21,7 +21,10 @@
 #include "net_time.h"
 #include "storage_usb.h"
 #include "tme/emu_monitor.h"
+#include "tme/emu.h"
+#include "tme/snd.h"
 #include "tme/tmeconfig.h"
+#include "screenshot.h"
 
 extern "C" {
 #include "tme/disp.h"
@@ -103,15 +106,16 @@ static void appendResponse(char *response, size_t responseSize, const char *text
 
 static void printConsoleCommandHelp(char *response = nullptr, size_t responseSize = 0) {
 #if ESP32_MAC_OPCODE_PROFILER
-    printf("Commands: help, cls, console, emu, storage, log on/off, perf on/off, cpu on/off, opprof on/off/reset/dump [n], status, show wifi, set wifi SSID PASSWORD, connect wifi, reboot\n");
-    appendResponse(response, responseSize, "Commands: help, cls, console, emu, storage, log on/off, perf on/off, cpu on/off, opprof on/off/reset/dump [n], status, show wifi, set wifi SSID PASSWORD, connect wifi, reboot\n");
+    printf("Commands: help, cls, console, emu, run, stop, ss, storage, log on/off, perf on/off, cpu on/off, opprof on/off/reset/dump [n], status, show wifi, set wifi SSID PASSWORD, connect wifi, reboot\n");
+    appendResponse(response, responseSize, "Commands: help, cls, console, emu, run, stop, ss, storage, log on/off, perf on/off, cpu on/off, opprof on/off/reset/dump [n], status, show wifi, set wifi SSID PASSWORD, connect wifi, reboot\n");
 #else
-    printf("Commands: help, cls, console, emu, storage, log on/off, perf on/off, cpu on/off, turbo on/off, status, show wifi, set wifi SSID PASSWORD, connect wifi, reboot\n");
-    appendResponse(response, responseSize, "Commands: help, cls, console, emu, storage, log on/off, perf on/off, cpu on/off, turbo on/off, status, show wifi, set wifi SSID PASSWORD, connect wifi, reboot\n");
+    printf("Commands: help, cls, console, emu, run, stop, ss, storage, log on/off, perf on/off, cpu on/off, turbo on/off, status, show wifi, set wifi SSID PASSWORD, connect wifi, reboot\n");
+    appendResponse(response, responseSize, "Commands: help, cls, console, emu, run, stop, ss, storage, log on/off, perf on/off, cpu on/off, turbo on/off, status, show wifi, set wifi SSID PASSWORD, connect wifi, reboot\n");
 #endif
     dispConsolePrintf("Commands:\n");
     dispConsolePrintf("help cls console\n");
     dispConsolePrintf("emu storage log on/off\n");
+    dispConsolePrintf("run stop ss\n");
     dispConsolePrintf("perf on/off\n");
     dispConsolePrintf("cpu on/off\n");
     dispConsolePrintf("turbo on/off\n");
@@ -172,8 +176,9 @@ static void printConsoleStatus(char *response = nullptr, size_t responseSize = 0
     int freeMem;
     int largestMem;
 
-    printf("STATUS: rom=%s log=%s perf=%s cpu=%s sync=%s turbo=%s\n",
+    printf("STATUS: rom=%s emu=%s log=%s perf=%s cpu=%s sync=%s turbo=%s\n",
            currentRomSource(),
+           tmeEmuRunning() ? "run" : "stop",
            appConsoleOutEnabled() ? "on" : "off",
            emuMonitorDetailedEnabled() ? "on" : "off",
            emuMonitorCoreUsageEnabled() ? "on" : "off",
@@ -181,16 +186,18 @@ static void printConsoleStatus(char *response = nullptr, size_t responseSize = 0
            appTurboEnabled() ? "on" : "off");
     if (response && responseSize > 0) {
         snprintf(response, responseSize,
-                 "STATUS: rom=%s log=%s perf=%s cpu=%s sync=%s turbo=%s\n",
+                 "STATUS: rom=%s emu=%s log=%s perf=%s cpu=%s sync=%s turbo=%s\n",
                  currentRomSource(),
+                 tmeEmuRunning() ? "run" : "stop",
                  appConsoleOutEnabled() ? "on" : "off",
                  emuMonitorDetailedEnabled() ? "on" : "off",
                  emuMonitorCoreUsageEnabled() ? "on" : "off",
                  appRealtimeSyncSkipped() ? "skip" : "audio",
                  appTurboEnabled() ? "on" : "off");
     }
-    dispConsolePrintf("STATUS rom=%s log=%s perf=%s cpu=%s sync=%s turbo=%s\n",
+    dispConsolePrintf("STATUS rom=%s emu=%s log=%s perf=%s cpu=%s sync=%s turbo=%s\n",
                       currentRomSource(),
+                      tmeEmuRunning() ? "run" : "stop",
                       appConsoleOutEnabled() ? "on" : "off",
                       emuMonitorDetailedEnabled() ? "on" : "off",
                       emuMonitorCoreUsageEnabled() ? "on" : "off",
@@ -254,6 +261,30 @@ static bool handleConsoleCommand(char *line, char *response = nullptr, size_t re
         printf("Display switched to emulator view\n");
         appendResponse(response, responseSize, "Display switched to emulator view\n");
         return true;
+    }
+    if (strcasecmp(cmd, "run") == 0) {
+        tmeRequestRun();
+        sndSetEnabled(true);
+        printf("Emulator running\n");
+        dispConsolePrintf("Emulator running\n");
+        appendResponse(response, responseSize, "Emulator running\n");
+        return true;
+    }
+    if (strcasecmp(cmd, "stop") == 0) {
+        tmeRequestStop();
+        sndSetEnabled(false);
+        printf("Emulator stopped\n");
+        dispConsolePrintf("Emulator stopped\n");
+        appendResponse(response, responseSize, "Emulator stopped\n");
+        return true;
+    }
+    if (strcasecmp(cmd, "ss") == 0) {
+        char result[64] = {};
+        bool ok = screenshotRequest(result, sizeof(result));
+        printf("%s", result);
+        dispConsolePrintf("%s", result);
+        appendResponse(response, responseSize, result);
+        return ok;
     }
     if (strcasecmp(cmd, "storage") == 0) {
         appendResponse(response, responseSize, "Entering USB mass storage mode...\n");

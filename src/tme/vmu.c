@@ -15,6 +15,7 @@ _Static_assert(TME_VIDMEM_SIZE_ALT == TME_VIDMEM_SIZE,
 // The LCD ISR always scans this fixed internal-RAM address. Surface switches
 // copy pixels into it instead of changing the LCD source pointer.
 static uint8_t *frontBuffer;
+static uint8_t *captureBuffer;
 
 // Each logical surface has a persistent PSRAM backing store. The active
 // surface temporarily lives in frontBuffer; its off-screen copy is refreshed
@@ -79,6 +80,10 @@ void vmuInit(void) {
         assert(offscreen[surface]);
         memset(offscreen[surface], 0xFF, TME_VIDMEM_SIZE);
     }
+    captureBuffer = (uint8_t *)tme_psram_aligned_alloc(
+        TME_VIDMEM_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    assert(captureBuffer);
+    memset(captureBuffer, 0xFF, TME_VIDMEM_SIZE);
 
     initialized = true;
     updateMappedBuffers();
@@ -97,6 +102,12 @@ void vmuAttachMmu(void) {
 uint8_t *vmuGetFrontBuffer(void) {
     assert(initialized);
     return frontBuffer;
+}
+
+uint8_t *vmuCaptureFrontBuffer(void) {
+    assert(initialized);
+    memcpy(captureBuffer, frontBuffer, TME_VIDMEM_SIZE);
+    return captureBuffer;
 }
 
 uint8_t *vmuGetMappedBuffer(VmuSurface surface) {
